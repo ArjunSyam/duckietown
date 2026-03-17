@@ -6,6 +6,10 @@ export function DeleteFile(arg1) {
   return window['go']['main']['App']['DeleteFile'](arg1);
 }
 
+export function GetCurrentUser() {
+  return window['go']['main']['App']['GetCurrentUser']();
+}
+
 export function GetFilePreview(arg1) {
   return window['go']['main']['App']['GetFilePreview'](arg1);
 }
@@ -36,4 +40,12 @@ export function SelectFolder() {
 
 export function SetVaultPath(arg1) {
   return window['go']['main']['App']['SetVaultPath'](arg1);
+}
+
+export function SignInWithGoogle() {
+  return window['go']['main']['App']['SignInWithGoogle']();
+}
+
+export function SignOut() {
+  return window['go']['main']['App']['SignOut']();
 }

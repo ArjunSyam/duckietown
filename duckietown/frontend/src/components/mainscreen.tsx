@@ -4,17 +4,24 @@ import { FileArea } from "./filearea";
 import { SearchBar } from "./searchbar";
 import type { FileRecord, FileTypeFilter, ViewMode } from "../types";
 
+interface User {
+  user_id: string;
+  email: string;
+}
+
 interface Props {
   files: FileRecord[];
   vaultPath: string;
   isWatching: boolean;
   syncing: boolean;
+  user: User | null;
   onDelete: (name: string) => void;
   onRename: (oldName: string, newName: string) => void;
   onOpen: (name: string) => void;
   onGetPreview: (name: string) => Promise<string>;
   onOpenVault: () => void;
   onRefresh: () => void;
+  onSignOut: () => void;
 }
 
 export function MainScreen({
@@ -22,12 +29,14 @@ export function MainScreen({
   vaultPath,
   isWatching,
   syncing,
+  user,
   onDelete,
   onRename,
   onOpen,
   onGetPreview,
   onOpenVault,
   onRefresh,
+  onSignOut,
 }: Props) {
   const [selectedType, setSelectedType] = useState<FileTypeFilter>("all");
   const [view, setView] = useState<ViewMode>("grid");
@@ -43,7 +52,9 @@ export function MainScreen({
       (selectedType === "documents" &&
         (f.mime_type.includes("pdf") ||
           f.mime_type.includes("document") ||
-          f.mime_type.includes("text"))) ||
+          f.mime_type.includes("text") ||
+          f.mime_type.includes("wordprocessingml") ||
+          f.mime_type.includes("msword"))) ||
       (selectedType === "videos" && f.mime_type.startsWith("video/")) ||
       (selectedType === "audio" && f.mime_type.startsWith("audio/")) ||
       (selectedType === "other" &&
@@ -52,7 +63,9 @@ export function MainScreen({
         !f.mime_type.startsWith("audio/") &&
         !f.mime_type.includes("pdf") &&
         !f.mime_type.includes("document") &&
-        !f.mime_type.includes("text"));
+        !f.mime_type.includes("text") &&
+        !f.mime_type.includes("wordprocessingml") &&
+        !f.mime_type.includes("msword"));
     return matchSearch && matchType;
   });
 
@@ -69,6 +82,8 @@ export function MainScreen({
         vaultPath={vaultPath}
         onOpenVault={onOpenVault}
         onRefresh={onRefresh}
+        onSignOut={onSignOut}
+        userEmail={user?.email ?? ""}
       />
       <div className="flex flex-col flex-1 overflow-hidden">
         <FileArea
