@@ -13,6 +13,7 @@ import {
   LayoutGrid,
   List,
   RefreshCw,
+  LogOut,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
@@ -45,7 +46,9 @@ function countByType(files: FileRecord[], type: FileTypeFilter): number {
       (f) =>
         f.mime_type.includes("pdf") ||
         f.mime_type.includes("document") ||
-        f.mime_type.includes("text"),
+        f.mime_type.includes("text") ||
+        f.mime_type.includes("wordprocessingml") ||
+        f.mime_type.includes("msword"),
     ).length;
   if (type === "videos")
     return files.filter((f) => f.mime_type.startsWith("video/")).length;
@@ -58,7 +61,9 @@ function countByType(files: FileRecord[], type: FileTypeFilter): number {
       !f.mime_type.startsWith("audio/") &&
       !f.mime_type.includes("pdf") &&
       !f.mime_type.includes("document") &&
-      !f.mime_type.includes("text"),
+      !f.mime_type.includes("text") &&
+      !f.mime_type.includes("wordprocessingml") &&
+      !f.mime_type.includes("msword"),
   ).length;
 }
 
@@ -73,6 +78,8 @@ interface Props {
   vaultPath: string;
   onOpenVault: () => void;
   onRefresh: () => void;
+  onSignOut: () => void;
+  userEmail: string;
 }
 
 export function Sidebar({
@@ -86,6 +93,8 @@ export function Sidebar({
   vaultPath,
   onOpenVault,
   onRefresh,
+  onSignOut,
+  userEmail,
 }: Props) {
   const folderName = vaultPath.split(/[\\/]/).pop() ?? "Vault";
   const totalSize = files.reduce((acc, f) => acc + (f.size ?? 0), 0);
@@ -94,7 +103,7 @@ export function Sidebar({
   return (
     <TooltipProvider>
       <aside className="w-[220px] min-w-[220px] flex flex-col border-r border-[#3e3e42] bg-[#252526]">
-        {/* Brand — drag region */}
+        {/* Brand */}
         <div className="drag-region flex items-center justify-between px-4 py-3 border-b border-[#3e3e42]">
           <div className="flex items-center gap-2.5 no-drag">
             <div className="w-7 h-7 rounded-lg bg-indigo-500/10 border border-indigo-500/20 flex items-center justify-center text-indigo-400">
@@ -115,7 +124,7 @@ export function Sidebar({
                 <RefreshCw size={12} className="text-muted-foreground" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Refresh</TooltipContent>
+            <TooltipContent>Refresh files</TooltipContent>
           </Tooltip>
         </div>
 
@@ -157,7 +166,11 @@ export function Sidebar({
               <span className="flex-1 text-xs">{item.label}</span>
               <span
                 className={`text-[10px] font-mono px-1.5 py-0.5 rounded-sm
-                ${selectedType === item.id ? "bg-indigo-500/15 text-indigo-300" : "bg-[#2d2d30] text-[#4a4a4a]"}`}
+                ${
+                  selectedType === item.id
+                    ? "bg-indigo-500/15 text-indigo-300"
+                    : "bg-[#2d2d30] text-[#4a4a4a]"
+                }`}
               >
                 {countByType(files, item.id)}
               </span>
@@ -192,6 +205,7 @@ export function Sidebar({
 
         {/* Footer */}
         <div className="px-3 py-3 flex flex-col gap-3">
+          {/* Sync status */}
           <div className="flex items-center gap-2 text-xs text-[#6a6a6a]">
             {syncing ? (
               <Loader2 size={12} className="spin text-yellow-400 shrink-0" />
@@ -200,7 +214,7 @@ export function Sidebar({
             ) : (
               <WifiOff size={12} className="shrink-0" />
             )}
-            <span className="text-xs">
+            <span>
               {syncing
                 ? "Syncing…"
                 : isWatching
@@ -208,6 +222,8 @@ export function Sidebar({
                   : "Not syncing"}
             </span>
           </div>
+
+          {/* Storage */}
           <div className="flex flex-col gap-1.5">
             <div className="flex justify-between">
               <span className="text-[10px] uppercase tracking-[1px] text-[#4a4a4a]">
@@ -218,6 +234,26 @@ export function Sidebar({
               </span>
             </div>
             <Progress value={storagePercent} className="h-[3px]" />
+          </div>
+
+          {/* User + sign out */}
+          <div className="flex items-center gap-2 pt-1">
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] text-[#4a4a4a] truncate">{userEmail}</p>
+            </div>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="w-6 h-6 text-[#4a4a4a] hover:text-destructive shrink-0"
+                  onClick={onSignOut}
+                >
+                  <LogOut size={12} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Sign out</TooltipContent>
+            </Tooltip>
           </div>
         </div>
       </aside>

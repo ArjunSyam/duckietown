@@ -4,6 +4,8 @@ import {main} from '../models';
 
 export function DeleteFile(arg1:string):Promise<void>;
 
+export function GetCurrentUser():Promise<Record<string, string>>;
+
 export function GetFilePreview(arg1:string):Promise<string>;
 
 export function GetVaultPath():Promise<string>;
@@ -19,3 +21,7 @@ export function RenameFile(arg1:string,arg2:string):Promise<void>;
 export function SelectFolder():Promise<string>;
 
 export function SetVaultPath(arg1:string):Promise<void>;
+
+export function SignInWithGoogle():Promise<void>;
+
+export function SignOut():Promise<void>;
