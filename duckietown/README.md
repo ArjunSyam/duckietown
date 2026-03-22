@@ -1,19 +1,4 @@
 # README
 
 ## About
-
-This is the official Wails React-TS template.
-
-You can configure the project by editing `wails.json`. More information about the project settings can be found
-here: https://wails.io/docs/reference/project-config
-
-## Live Development
-
-To run in live development mode, run `wails dev` in the project directory. This will run a Vite development
-server that will provide very fast hot reload of your frontend changes. If you want to develop in a browser
-and have access to your Go methods, there is also a dev server that runs on http://localhost:34115. Connect
-to this in your browser, and you can call your Go code from devtools.
-
-## Building
-
-To build a redistributable, production mode package, use `wails build`.
+People today have large amounts of documents, pictures, and files that are saved either in the Cloud or on some type of local-storage device. However, traditional file systems are structured in such a way that they rely on file name and folder structure for the storage/organization of files and thus do not provide efficient retrieval methods from a user's perspective if the user remembers only what is contained within a file. The goal of this project is to create a Smart AI-Based Vectorized Cloud File System enabling a user to perform content-based searches through the use of artificial intelligence to find files. Content from both image and document files will be extracted through the use of natural language processing (NLP) embeddings, optical character recognition (OCR) and object detection models and stored in a database (PostgreSQL vector database) that uses vectors for storing the embedded values (i.e., NLP, OCR etc.) and of course actual files (documents/images) will continue to be stored in a standard database (MongoDB). In addition, there will be an AI agent used to help organize files (i.e., renaming and creating folders) to increase the efficiency and productivity with regards to digital file management.
