@@ -117,6 +117,7 @@ func (a *App) fullSync() {
 
 	dbFiles, err := a.supaListFiles()
 	if err != nil {
+		fmt.Printf("dbfile err: %v\n", err)
 		return
 	}
 	dbSet := make(map[string]bool)

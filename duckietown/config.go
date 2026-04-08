@@ -3,14 +3,23 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 //App config (vault path)
 
 type Config struct {
 	VaultPath string `json:"vault_path"`
+}
+
+type refreshResponse struct {
+	AccessToken  string   `json:"access_token"`
+	RefreshToken string   `json:"refresh_token"`
+	User         AuthUser `json:"user"`
 }
 
 func configDir() string {
@@ -72,4 +81,50 @@ func saveSession(s Session) {
 
 func clearSession() {
 	os.Remove(sessionPath())
+}
+
+func (a *App) refreshSession() error {
+	if a.refreshToken == "" {
+		return fmt.Errorf("no refresh token available")
+	}
+
+	url := fmt.Sprintf("%s/auth/v1/token?grant_type=refresh_token", a.supaURL)
+	payload, _ := json.Marshal(map[string]string{
+		"refresh_token": a.refreshToken,
+	})
+
+	req, _ := http.NewRequest("POST", url, strings.NewReader(string(payload)))
+	req.Header.Set("apikey", a.supaKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed to refresh token: %d", resp.StatusCode)
+	}
+
+	var res refreshResponse
+
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+		return err
+	}
+
+	// Update memory
+	a.accessToken = res.AccessToken
+	a.refreshToken = res.RefreshToken
+
+	// Persist updated tokens to disk
+	saveSession(Session{
+		AccessToken:  res.AccessToken,
+		RefreshToken: res.RefreshToken,
+		UserID:       a.userID,
+		Email:        a.email,
+	})
+
+	return nil
 }
