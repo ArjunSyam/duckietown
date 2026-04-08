@@ -22,9 +22,10 @@ type App struct {
 	supaKey string
 
 	// Auth
-	userID      string
-	accessToken string
-	email       string
+	userID       string
+	accessToken  string
+	refreshToken string
+	email        string
 }
 
 func NewApp() *App {
@@ -37,13 +38,22 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-
 	// If we have a saved session, restore it and check vault
 	session := loadSession()
-	if session.AccessToken != "" && session.UserID != "" {
-		a.accessToken = session.AccessToken
+
+	if session.RefreshToken != "" {
+		a.refreshToken = session.RefreshToken
 		a.userID = session.UserID
 		a.email = session.Email
+
+		// Try to refresh immediately on startup
+		err := a.refreshSession()
+		if err != nil {
+			// If refresh fails, the session is truly dead
+			clearSession()
+			wailsruntime.EventsEmit(a.ctx, "auth-expired", nil)
+			return
+		}
 
 		// Emit auth restored so frontend can skip auth screen
 		wailsruntime.EventsEmit(a.ctx, "auth-restored", map[string]string{

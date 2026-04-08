@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"time"
 )
 
 const bucket = "duckietown"
@@ -47,8 +46,7 @@ func (a *App) supaUploadFile(filePath, fileName string) error {
 	req.Header.Set("Content-Type", mimeType)
 	req.Header.Set("x-upsert", "true")
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.supaDo(req)
 	if err != nil {
 		return fmt.Errorf("network error: %w", err)
 	}
@@ -94,8 +92,7 @@ func (a *App) supaUpsertFileRecord(fileName string, size int64, mimeType, storag
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Prefer", "resolution=merge-duplicates")
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.supaDo(req)
 	if err != nil {
 		return fmt.Errorf("db error: %w", err)
 	}
@@ -109,8 +106,7 @@ func (a *App) supaDeleteFileRecord(fileName string) error {
 	req, _ := http.NewRequest("DELETE", url, nil)
 	a.supaHeaders(req)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.supaDo(req)
 	if err != nil {
 		return err
 	}
@@ -128,12 +124,16 @@ func (a *App) supaListFiles() ([]FileRecord, error) {
 	a.supaHeaders(req)
 	req.Header.Set("Accept", "application/json")
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.supaDo(req)
 	if err != nil {
 		return nil, fmt.Errorf("network error: %w", err)
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("supabase error [%d]: %s", resp.StatusCode, string(body))
+	}
 
 	var rows []supaFileRow
 	if err := json.NewDecoder(resp.Body).Decode(&rows); err != nil {
@@ -163,8 +163,7 @@ func (a *App) supaDeleteStorageFile(fileName string) error {
 	req, _ := http.NewRequest("DELETE", url, nil)
 	a.supaHeaders(req)
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.supaDo(req)
 	if err != nil {
 		return err
 	}
@@ -179,8 +178,7 @@ func (a *App) supaGetFileURL(fileName string) (string, error) {
 	a.supaHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.supaDo(req)
 	if err != nil {
 		return "", err
 	}
@@ -202,8 +200,7 @@ func (a *App) supaListStorageFiles() ([]string, error) {
 	a.supaHeaders(req)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.supaDo(req)
 	if err != nil {
 		return nil, fmt.Errorf("network error: %w", err)
 	}

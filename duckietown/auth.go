@@ -227,8 +227,7 @@ func (a *App) supaGetUser(accessToken string) (AuthUser, error) {
 	req.Header.Set("apikey", a.supaKey)
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 
-	client := &http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Do(req)
+	resp, err := a.supaDo(req)
 	if err != nil {
 		return AuthUser{}, fmt.Errorf("network error: %w", err)
 	}
@@ -278,4 +277,27 @@ func (a *App) SignOut() {
 	}
 
 	clearSession()
+}
+
+func (a *App) supaDo(req *http.Request) (*http.Response, error) {
+	a.supaHeaders(req)
+	client := &http.Client{Timeout: 10 * time.Second}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// If we get a 401, try to refresh and retry ONCE
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close() // Important!
+
+		if refreshErr := a.refreshSession(); refreshErr == nil {
+			// Update headers with NEW token and retry the exact same request
+			a.supaHeaders(req)
+			return client.Do(req)
+		}
+	}
+
+	return resp, nil
 }
