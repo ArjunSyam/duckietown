@@ -12,6 +12,7 @@ import {
   Trash2,
   Pencil,
   MoreHorizontal,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -37,7 +38,7 @@ import {
   TooltipTrigger,
   TooltipProvider,
 } from "@/components/ui/tooltip";
-import type { FileRecord, ViewMode } from "../types";
+import type { FileRecord, ViewMode, SearchResult } from "../types";
 import { formatBytes, formatDate } from "../lib/utils";
 
 // ── Icons ──────────────────────────────────────────────
@@ -81,19 +82,21 @@ function FileIcon({
   return <Package {...p} className="icon-pkg" />;
 }
 
-// ── Highlight match ────────────────────────────────────
+// ── Similarity badge ───────────────────────────────────
 
-function Highlight({ text, query }: { text: string; query: string }) {
-  if (!query) return <span>{text}</span>;
-  const i = text.toLowerCase().indexOf(query.toLowerCase());
-  if (i === -1) return <span>{text}</span>;
+function SimilarityBadge({ score }: { score: number }) {
+  const pct = Math.round(score * 100);
+  const color =
+    pct >= 80
+      ? "text-indigo-300 border-indigo-400/40"
+      : pct >= 50
+        ? "text-indigo-400/70 border-indigo-500/30"
+        : "text-[#6a6a6a] border-[#3e3e42]";
   return (
-    <span>
-      {text.slice(0, i)}
-      <mark className="bg-indigo-500/30 text-[#d4d4d4] rounded-sm">
-        {text.slice(i, i + query.length)}
-      </mark>
-      {text.slice(i + query.length)}
+    <span
+      className={`text-[9px] font-mono border rounded px-1 py-0.5 ${color}`}
+    >
+      {pct}% match
     </span>
   );
 }
@@ -168,36 +171,35 @@ function ImageThumb({
 
 function FileCard({
   file,
-  query,
+  similarity,
+  inAiMode,
   onDelete,
   onRename,
   onOpen,
   onGetPreview,
+  onAskAi,
 }: {
   file: FileRecord;
-  query: string;
+  similarity?: number;
+  inAiMode: boolean;
   onDelete: (n: string) => void;
   onRename: (old: string, newN: string) => void;
   onOpen: (n: string) => void;
   onGetPreview: (n: string) => Promise<string>;
+  onAskAi: (n: string) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
   const ext = file.name.split(".").pop()?.toUpperCase() ?? "FILE";
-
-  const handleRename = (newName: string) => {
-    setRenaming(false);
-    if (newName && newName !== file.name) onRename(file.name, newName);
-  };
 
   return (
     <ContextMenu>
       <ContextMenuTrigger>
         <div
-          className="file-card relative bg-[#252526] border border-[#3e3e42] rounded-lg overflow-hidden cursor-pointer
-            transition-all hover:-translate-y-0.5 hover:shadow-xl hover:shadow-black/30 hover:border-[#505050] fade-in"
+          className={`file-card relative bg-[#252526] border rounded-lg overflow-hidden cursor-pointer
+            transition-all hover:-translate-y-0.5 hover:shadow-xl hover:shadow-black/30 hover:border-[#505050] fade-in
+            ${inAiMode && similarity !== undefined && similarity >= 0.5 ? "border-indigo-500/30" : "border-[#3e3e42]"}`}
           onDoubleClick={() => onOpen(file.name)}
         >
-          {/* Preview area */}
           <div className="h-[90px] bg-[#2d2d30] border-b border-[#3e3e42] overflow-hidden relative flex items-center justify-center">
             {file.mime_type.startsWith("image/") ? (
               <ImageThumb name={file.name} onGetPreview={onGetPreview} />
@@ -211,12 +213,14 @@ function FileCard({
             )}
           </div>
 
-          {/* Info */}
           <div className="px-2.5 pt-2 pb-8">
             {renaming ? (
               <RenameInput
                 name={file.name}
-                onConfirm={handleRename}
+                onConfirm={(n) => {
+                  setRenaming(false);
+                  if (n && n !== file.name) onRename(file.name, n);
+                }}
                 onCancel={() => setRenaming(false)}
               />
             ) : (
@@ -224,7 +228,7 @@ function FileCard({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <p className="text-[11px] font-medium truncate leading-tight text-[#d4d4d4]">
-                      <Highlight text={file.name} query={query} />
+                      {file.name}
                     </p>
                   </TooltipTrigger>
                   <TooltipContent className="text-xs font-mono">
@@ -233,16 +237,17 @@ function FileCard({
                 </Tooltip>
               </TooltipProvider>
             )}
-            <p className="text-[10px] font-mono text-[#6a6a6a] mt-0.5">
-              {formatBytes(file.size)}
-            </p>
+            <div className="flex items-center justify-between mt-0.5 gap-1">
+              <p className="text-[10px] font-mono text-[#6a6a6a]">
+                {formatBytes(file.size)}
+              </p>
+              {inAiMode && similarity !== undefined && (
+                <SimilarityBadge score={similarity} />
+              )}
+            </div>
           </div>
 
-          {/* Hover actions */}
-          <div
-            className="card-actions absolute bottom-0 left-0 right-0 flex items-center gap-1 p-1.5
-            bg-gradient-to-t from-[#252526] to-transparent"
-          >
+          <div className="card-actions absolute bottom-0 left-0 right-0 flex items-center gap-1 p-1.5 bg-gradient-to-t from-[#252526] to-transparent">
             <Button
               variant="secondary"
               size="sm"
@@ -269,6 +274,9 @@ function FileCard({
                 <DropdownMenuItem onClick={() => onOpen(file.name)}>
                   <ExternalLink size={12} className="mr-2" /> Open
                 </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onAskAi(file.name)}>
+                  <Sparkles size={12} className="mr-2" /> Ask AI
+                </DropdownMenuItem>
                 <DropdownMenuItem onClick={() => setRenaming(true)}>
                   <Pencil size={12} className="mr-2" /> Rename
                 </DropdownMenuItem>
@@ -287,6 +295,9 @@ function FileCard({
       <ContextMenuContent>
         <ContextMenuItem onClick={() => onOpen(file.name)}>
           <ExternalLink size={13} className="mr-2" /> Open
+        </ContextMenuItem>
+        <ContextMenuItem onClick={() => onAskAi(file.name)}>
+          <Sparkles size={13} className="mr-2" /> Ask AI / Summarise
         </ContextMenuItem>
         <ContextMenuItem onClick={() => setRenaming(true)}>
           <Pencil size={13} className="mr-2" /> Rename
@@ -307,18 +318,22 @@ function FileCard({
 
 function FileRow({
   file,
-  query,
+  similarity,
+  inAiMode,
   onDelete,
   onRename,
   onOpen,
   onGetPreview,
+  onAskAi,
 }: {
   file: FileRecord;
-  query: string;
+  similarity?: number;
+  inAiMode: boolean;
   onDelete: (n: string) => void;
   onRename: (old: string, newN: string) => void;
   onOpen: (n: string) => void;
   onGetPreview: (n: string) => Promise<string>;
+  onAskAi: (n: string) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
 
@@ -326,11 +341,14 @@ function FileRow({
     <ContextMenu>
       <ContextMenuTrigger>
         <div
-          className="grid items-center gap-2 px-3 py-2 rounded-md border border-transparent
-          hover:bg-[#2d2d30] hover:border-[#3e3e42] transition-colors fade-in"
-          style={{ gridTemplateColumns: "32px 1fr 90px 72px 110px 72px" }}
+          className={`grid items-center gap-2 px-3 py-2 rounded-md border transition-colors fade-in
+            ${
+              inAiMode && similarity !== undefined && similarity >= 0.5
+                ? "border-indigo-500/20 hover:bg-[#2d2d30] hover:border-indigo-500/30"
+                : "border-transparent hover:bg-[#2d2d30] hover:border-[#3e3e42]"
+            }`}
+          style={{ gridTemplateColumns: "32px 1fr 90px 72px 90px 96px" }}
         >
-          {/* Thumb / icon */}
           <div className="w-8 h-8 rounded overflow-hidden bg-[#2d2d30] flex items-center justify-center shrink-0">
             {file.mime_type.startsWith("image/") ? (
               <ImageThumb name={file.name} onGetPreview={onGetPreview} />
@@ -339,7 +357,6 @@ function FileRow({
             )}
           </div>
 
-          {/* Name */}
           <div className="min-w-0">
             {renaming ? (
               <RenameInput
@@ -355,12 +372,11 @@ function FileRow({
                 className="text-xs font-medium truncate block cursor-pointer hover:text-indigo-400 transition-colors"
                 onClick={() => onOpen(file.name)}
               >
-                <Highlight text={file.name} query={query} />
+                {file.name}
               </span>
             )}
           </div>
 
-          {/* Type badge */}
           <Badge
             variant="outline"
             className="text-[9px] font-mono uppercase tracking-wide h-4 px-1.5 w-fit"
@@ -371,11 +387,15 @@ function FileRow({
           <span className="text-[11px] font-mono text-[#6a6a6a]">
             {formatBytes(file.size)}
           </span>
-          <span className="text-[11px] text-[#6a6a6a]">
-            {formatDate(file.updated_at)}
-          </span>
 
-          {/* Actions */}
+          {inAiMode && similarity !== undefined ? (
+            <SimilarityBadge score={similarity} />
+          ) : (
+            <span className="text-[11px] text-[#6a6a6a]">
+              {formatDate(file.updated_at)}
+            </span>
+          )}
+
           <div className="flex items-center gap-0.5 justify-end">
             <Button
               variant="ghost"
@@ -384,6 +404,14 @@ function FileRow({
               onClick={() => onOpen(file.name)}
             >
               <ExternalLink size={12} />
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="w-6 h-6 text-[#6a6a6a] hover:text-indigo-400"
+              onClick={() => onAskAi(file.name)}
+            >
+              <Sparkles size={12} />
             </Button>
             <Button
               variant="ghost"
@@ -408,6 +436,9 @@ function FileRow({
         <ContextMenuItem onClick={() => onOpen(file.name)}>
           <ExternalLink size={13} className="mr-2" /> Open
         </ContextMenuItem>
+        <ContextMenuItem onClick={() => onAskAi(file.name)}>
+          <Sparkles size={13} className="mr-2" /> Ask AI / Summarise
+        </ContextMenuItem>
         <ContextMenuItem onClick={() => setRenaming(true)}>
           <Pencil size={13} className="mr-2" /> Rename
         </ContextMenuItem>
@@ -429,21 +460,30 @@ interface Props {
   files: FileRecord[];
   view: ViewMode;
   searchQuery: string;
+  aiResults: SearchResult[];
   onDelete: (n: string) => void;
   onRename: (old: string, newN: string) => void;
   onOpen: (n: string) => void;
   onGetPreview: (n: string) => Promise<string>;
+  onAskAi: (n: string) => void;
 }
 
 export function FileArea({
   files,
   view,
   searchQuery,
+  aiResults,
   onDelete,
   onRename,
   onOpen,
   onGetPreview,
+  onAskAi,
 }: Props) {
+  const similarityMap: Record<string, number> = Object.fromEntries(
+    aiResults.map((r) => [r.file_name, r.similarity]),
+  );
+  const inAiMode = aiResults.length > 0;
+
   if (files.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-3 p-16">
@@ -459,11 +499,12 @@ export function FileArea({
   }
 
   const shared = {
-    query: searchQuery,
+    inAiMode,
     onDelete,
     onRename,
     onOpen,
     onGetPreview,
+    onAskAi,
   };
 
   if (view === "list") {
@@ -471,19 +512,24 @@ export function FileArea({
       <div className="flex flex-col flex-1 overflow-hidden">
         <div
           className="grid gap-2 px-3 py-2 border-b border-[#3e3e42] bg-[#252526] text-[10px] font-semibold uppercase tracking-widest text-[#4a4a4a] shrink-0"
-          style={{ gridTemplateColumns: "32px 1fr 90px 72px 110px 72px" }}
+          style={{ gridTemplateColumns: "32px 1fr 90px 72px 90px 96px" }}
         >
           <span />
           <span>Name</span>
           <span>Type</span>
           <span>Size</span>
-          <span>Modified</span>
+          <span>{inAiMode ? "Match" : "Modified"}</span>
           <span className="text-right">Actions</span>
         </div>
         <ScrollArea className="flex-1">
           <div className="px-2 py-1.5 flex flex-col gap-0.5">
             {files.map((f) => (
-              <FileRow key={f.name} file={f} {...shared} />
+              <FileRow
+                key={f.name}
+                file={f}
+                similarity={similarityMap[f.name]}
+                {...shared}
+              />
             ))}
           </div>
         </ScrollArea>
@@ -498,7 +544,12 @@ export function FileArea({
         style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}
       >
         {files.map((f) => (
-          <FileCard key={f.name} file={f} {...shared} />
+          <FileCard
+            key={f.name}
+            file={f}
+            similarity={similarityMap[f.name]}
+            {...shared}
+          />
         ))}
       </div>
     </ScrollArea>

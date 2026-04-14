@@ -1,0 +1,18 @@
+# Duckietown Sidecar dependencies
+# Install: pip install -r requirements.txt
+
+# Web server
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+pydantic==2.10.3
+
+# HTTP client (for Jina API calls)
+requests==2.32.3
+
+# Vector DB
+chromadb==0.5.23
+
+# File content extraction
+pdfplumber==0.11.4
+python-docx==1.1.2
+openpyxl==3.1.5
