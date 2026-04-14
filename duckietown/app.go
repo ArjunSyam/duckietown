@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sync"
 
@@ -9,7 +10,6 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// App struct
 type App struct {
 	ctx         context.Context
 	vaultPath   string
@@ -17,11 +17,9 @@ type App struct {
 	watcherStop chan struct{}
 	mu          sync.Mutex
 
-	// Supabase
 	supaURL string
 	supaKey string
 
-	// Auth
 	userID       string
 	accessToken  string
 	refreshToken string
@@ -38,7 +36,6 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	// If we have a saved session, restore it and check vault
 	session := loadSession()
 
 	if session.RefreshToken != "" {
@@ -46,28 +43,36 @@ func (a *App) startup(ctx context.Context) {
 		a.userID = session.UserID
 		a.email = session.Email
 
-		// Try to refresh immediately on startup
 		err := a.refreshSession()
 		if err != nil {
-			// If refresh fails, the session is truly dead
 			clearSession()
 			wailsruntime.EventsEmit(a.ctx, "auth-expired", nil)
 			return
 		}
 
-		// Emit auth restored so frontend can skip auth screen
 		wailsruntime.EventsEmit(a.ctx, "auth-restored", map[string]string{
 			"user_id": a.userID,
 			"email":   a.email,
 		})
 
-		// Restore vault if set
 		cfg := loadConfig(a.userID)
 		if cfg.VaultPath != "" {
 			a.vaultPath = cfg.VaultPath
+
+			if err := a.startSidecar(); err != nil {
+				fmt.Printf("⚠️ Sidecar start failed: %v\n", err)
+			}
+
+			// Start the serialized ingest worker — one file at a time to respect Jina rate limits
+			a.startIngestWorker()
+
 			a.startWatcher()
 			go a.fullSync()
 			wailsruntime.EventsEmit(a.ctx, "watcher-ready", true)
 		}
 	}
+}
+
+func (a *App) shutdown(ctx context.Context) {
+	stopSidecar()
 }

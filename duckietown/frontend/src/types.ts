@@ -22,3 +22,11 @@ export interface WailsFileEvent {
   file_name: string;
   path?: string;
 }
+
+export interface SearchResult {
+  file_name: string;
+  similarity: number;
+  snippet: string;
+  modality: string;
+  page: string;
+}

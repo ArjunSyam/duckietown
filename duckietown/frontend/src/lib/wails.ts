@@ -1,6 +1,3 @@
-// Typed wrappers around the Wails-generated Go bindings
-// Wails auto-generates these in wailsjs/go/main/App.js - we just type them
-
 import {
   GetVaultPath,
   SetVaultPath,
@@ -14,9 +11,13 @@ import {
   SignInWithGoogle,
   SignOut,
   GetCurrentUser,
+  SemanticSearch,
+  ChatWithAgent,
 } from "../../wailsjs/go/main/App";
 
 import { EventsOn, EventsOff } from "../../wailsjs/runtime/runtime";
+
+import type { SearchResult } from "../types";
 
 export const wails = {
   // Auth
@@ -37,6 +38,18 @@ export const wails = {
     RenameFile(oldName, newName),
   openFile: (name: string) => OpenFile(name),
   getFilePreview: (name: string): Promise<string> => GetFilePreview(name),
+
+  // AI — semantic search
+  semanticSearch: (query: string, topK = 50): Promise<SearchResult[]> =>
+    SemanticSearch(query, topK),
+
+  // AI — chat (streams back via events: chat-token, chat-sources, chat-done, chat-error)
+  // fileName: optional — if provided, grounds the response on that specific file
+  chatWithAgent: (
+    message: string,
+    history: Array<{ role: string; content: string }>,
+    fileName = "",
+  ): Promise<void> => ChatWithAgent(message, history, fileName),
 
   // Events
   on: EventsOn,

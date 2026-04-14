@@ -2,3 +2,9 @@ build/bin
 node_modules
 frontend/dist
 .env
+sidecar/.venv/
+sidecar/__pycache__/
+sidecar/dist/
+sidecar/build/
+sidecar/ImageBind/
+~/.duckietown/chromadb/

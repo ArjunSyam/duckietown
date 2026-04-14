@@ -6,25 +6,20 @@ import {
   X,
   CornerDownLeft,
   Search,
+  Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
-
-const SUGGESTIONS = [
-  "Show PDFs",
-  "Find images",
-  "Audio files",
-  "Spreadsheets",
-  "Recent videos",
-];
+import { wails } from "../lib/wails";
+import type { SearchResult } from "../types";
 
 interface Props {
   open: boolean;
   onToggle: () => void;
   query: string;
   onSearch: (q: string) => void;
-  resultCount: number;
-  totalCount: number;
+  onAiSearch: (results: SearchResult[]) => void;
+  aiResultCount: number;
 }
 
 export function SearchBar({
@@ -32,38 +27,76 @@ export function SearchBar({
   onToggle,
   query,
   onSearch,
-  resultCount,
-  totalCount,
+  onAiSearch,
+  aiResultCount,
 }: Props) {
   const [draft, setDraft] = useState(query);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiMode, setAiMode] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
   const isActive = query.trim().length > 0;
 
   useEffect(() => {
     if (open) setTimeout(() => inputRef.current?.focus(), 50);
   }, [open]);
 
-  const submit = () => onSearch(draft.trim());
+  useEffect(() => {
+    if (!query) setAiMode(false);
+  }, [query]);
+
+  const runAiSearch = async (q: string) => {
+    if (!q.trim()) return;
+    setAiLoading(true);
+    try {
+      const results: SearchResult[] = await wails.semanticSearch(q.trim(), 50);
+      setAiMode(true);
+      onSearch(q.trim());
+      onAiSearch(results);
+    } catch (e) {
+      console.error("AI search failed:", e);
+    } finally {
+      setAiLoading(false);
+    }
+  };
+
   const clear = () => {
     setDraft("");
+    setAiMode(false);
     onSearch("");
+    onAiSearch([]);
+  };
+
+  const statusText = () => {
+    if (aiLoading) return "Searching…";
+    if (aiMode)
+      return `"${query}" · ${aiResultCount} files ranked by relevance`;
+    if (isActive) return `"${query}"`;
+    return "Ask AI to find files…";
   };
 
   return (
     <div
-      className={`border-t border-[#3e3e42] bg-[#252526] transition-all duration-200 shrink-0 ${open ? "search-bar-expanded" : "search-bar-collapsed"} overflow-hidden`}
+      className={`border-t border-[#3e3e42] bg-[#252526] transition-all duration-200 shrink-0 ${
+        open ? "search-bar-expanded" : "search-bar-collapsed"
+      } overflow-hidden`}
     >
-      {/* Toggle row — always visible */}
+      {/* Toggle row */}
       <div className="flex items-center gap-2 px-4 h-12">
         <button
           onClick={onToggle}
           className="flex items-center gap-2 text-xs text-[#6a6a6a] hover:text-[#d4d4d4] transition-colors"
         >
-          <Sparkles size={14} className={isActive ? "text-indigo-400" : ""} />
-          <span className={isActive ? "text-indigo-300" : ""}>
-            {isActive
-              ? `"${query}" · ${resultCount} of ${totalCount} files`
-              : "Search files…"}
+          {aiLoading ? (
+            <Loader2 size={14} className="text-indigo-400 animate-spin" />
+          ) : (
+            <Sparkles
+              size={14}
+              className={isActive || aiMode ? "text-indigo-400" : ""}
+            />
+          )}
+          <span className={isActive || aiMode ? "text-indigo-300" : ""}>
+            {statusText()}
           </span>
           {open ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
         </button>
@@ -88,7 +121,6 @@ export function SearchBar({
         <>
           <Separator className="bg-[#3e3e42]" />
 
-          {/* Input */}
           <div className="flex items-center gap-3 px-4 py-3">
             <Search size={15} className="text-[#4a4a4a] shrink-0" />
             <input
@@ -97,16 +129,21 @@ export function SearchBar({
               value={draft}
               onChange={(e) => {
                 setDraft(e.target.value);
-                onSearch(e.target.value);
+                // If user edits after an AI search, clear old results
+                if (aiMode) {
+                  setAiMode(false);
+                  onAiSearch([]);
+                  onSearch("");
+                }
               }}
               onKeyDown={(e) => {
-                if (e.key === "Enter") submit();
+                if (e.key === "Enter") runAiSearch(draft);
                 if (e.key === "Escape") {
                   clear();
                   onToggle();
                 }
               }}
-              placeholder="Type a filename to filter… e.g. 'invoice' or 'report'"
+              placeholder="Describe what you're looking for and press Enter…"
               className="flex-1 bg-transparent border-none outline-none text-sm text-[#d4d4d4] placeholder:text-[#3a3a3a]"
             />
             {draft && (
@@ -123,37 +160,35 @@ export function SearchBar({
               variant={draft ? "default" : "ghost"}
               size="icon"
               className={`w-7 h-7 shrink-0 transition-all ${!draft && "opacity-20"}`}
-              onClick={submit}
-              disabled={!draft}
+              onClick={() => runAiSearch(draft)}
+              disabled={!draft || aiLoading}
             >
-              <CornerDownLeft size={13} />
+              {aiLoading ? (
+                <Loader2 size={13} className="animate-spin" />
+              ) : (
+                <CornerDownLeft size={13} />
+              )}
             </Button>
           </div>
 
-          {/* Suggestions */}
-          <div className="flex items-center gap-2 px-4 pb-3 flex-wrap">
-            <span className="text-[10px] text-[#4a4a4a] uppercase tracking-wider shrink-0">
-              Try:
-            </span>
-            {SUGGESTIONS.map((s) => (
-              <button
-                key={s}
-                onClick={() => {
-                  setDraft(s);
-                  onSearch(s);
-                }}
-                className="text-[11px] text-[#6a6a6a] hover:text-[#d4d4d4] bg-[#2d2d30] hover:bg-[#3e3e42] border border-[#3e3e42] px-2.5 py-1 rounded-full transition-colors"
-              >
-                {s}
-              </button>
-            ))}
-          </div>
-
-          {/* AI note */}
           <div className="px-4 pb-3">
             <p className="text-[10px] text-[#3a3a3a] flex items-center gap-1.5">
-              <Sparkles size={10} className="text-indigo-500/50" />
-              AI semantic search coming soon — currently filters by filename
+              {aiLoading ? (
+                <>
+                  <Loader2 size={10} className="text-indigo-400 animate-spin" />
+                  Searching across file contents…
+                </>
+              ) : aiMode ? (
+                <>
+                  <Sparkles size={10} className="text-indigo-400" />
+                  Files ranked by semantic similarity — press Enter to re-search
+                </>
+              ) : (
+                <>
+                  <Sparkles size={10} className="text-indigo-500/50" />
+                  Searches inside file contents, not just filenames
+                </>
+              )}
             </p>
           </div>
         </>

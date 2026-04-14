@@ -15,7 +15,6 @@ func (a *App) startWatcher() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Stop existing watcher if running
 	if a.isWatching && a.watcherStop != nil {
 		close(a.watcherStop)
 	}
@@ -30,7 +29,6 @@ func (a *App) startWatcher() {
 		}
 		defer watcher.Close()
 		watcher.Add(vaultPath)
-
 		fmt.Printf("👁 Watching: %s\n", vaultPath)
 
 		for {
@@ -52,17 +50,30 @@ func (a *App) startWatcher() {
 	}(a.watcherStop, a.vaultPath)
 }
 
+func shouldSkipFile(name string) bool {
+	if strings.HasPrefix(name, ".") {
+		return true
+	}
+	skipExts := []string{"~", ".tmp", ".crdownload", ".part", ".partial", ".download"}
+	for _, ext := range skipExts {
+		if strings.HasSuffix(name, ext) {
+			return true
+		}
+	}
+	// Skip files that start with "Unconfirmed " (Chrome partial downloads)
+	if strings.HasPrefix(name, "Unconfirmed ") {
+		return true
+	}
+	return false
+}
+
 func (a *App) handleFSEvent(event fsnotify.Event) {
 	name := filepath.Base(event.Name)
 
-	// Skip hidden and temp files
-	if strings.HasPrefix(name, ".") ||
-		strings.HasSuffix(name, "~") ||
-		strings.HasSuffix(name, ".tmp") {
+	if shouldSkipFile(name) {
 		return
 	}
 
-	// Skip directories
 	info, err := os.Stat(event.Name)
 	if err == nil && info.IsDir() {
 		return
@@ -75,7 +86,6 @@ func (a *App) handleFSEvent(event fsnotify.Event) {
 			"file_name":  name,
 			"path":       event.Name,
 		})
-		// Small delay to ensure file is fully written before reading
 		time.Sleep(200 * time.Millisecond)
 		go func() {
 			if err := a.supaUploadFile(event.Name, name); err != nil {
@@ -84,6 +94,7 @@ func (a *App) handleFSEvent(event fsnotify.Event) {
 				})
 			} else {
 				wailsruntime.EventsEmit(a.ctx, "file-uploaded", name)
+				queueIngest(event.Name, name)
 			}
 		}()
 
@@ -92,5 +103,6 @@ func (a *App) handleFSEvent(event fsnotify.Event) {
 			"event_type": "deleted",
 			"file_name":  name,
 		})
+		go a.DeleteFileEmbeddings(name)
 	}
 }
