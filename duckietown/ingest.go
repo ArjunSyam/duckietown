@@ -35,6 +35,13 @@ type deleteRequest struct {
 	UserID   string `json:"user_id"`
 }
 
+type moveRequest struct {
+	OldName string `json:"old_name"`
+	NewName string `json:"new_name"`
+	UserID  string `json:"user_id"`
+}
+
+// GetIndexedFiles returns the set of file names already in ChromaDB.
 func (a *App) GetIndexedFiles() (map[string]bool, error) {
 	if !sidecarReady() {
 		return nil, fmt.Errorf("sidecar not ready")
@@ -59,6 +66,7 @@ func (a *App) GetIndexedFiles() (map[string]bool, error) {
 	return indexed, nil
 }
 
+// IngestFile embeds and stores a file in ChromaDB.
 func (a *App) IngestFile(filePath, fileName string) error {
 	if a.userID == "" {
 		return fmt.Errorf("not authenticated")
@@ -86,6 +94,35 @@ func (a *App) IngestFile(filePath, fileName string) error {
 	return nil
 }
 
+// MoveFileEmbeddings updates ChromaDB metadata when a file is renamed or moved.
+// Reuses existing embeddings — no re-ingestion.
+func (a *App) MoveFileEmbeddings(oldName, newName string) error {
+	if a.userID == "" || !sidecarReady() {
+		return nil
+	}
+	if oldName == newName {
+		return nil
+	}
+
+	body, _ := json.Marshal(moveRequest{
+		OldName: oldName,
+		NewName: newName,
+		UserID:  a.userID,
+	})
+
+	req, _ := http.NewRequest(http.MethodPatch, sidecarBase+"/ingest/move", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("move embeddings request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	fmt.Printf("🧠 Embeddings updated: %s → %s\n", oldName, newName)
+	return nil
+}
+
+// DeleteFileEmbeddings removes all chunks for a file from ChromaDB.
 func (a *App) DeleteFileEmbeddings(fileName string) error {
 	if a.userID == "" || !sidecarReady() {
 		return nil

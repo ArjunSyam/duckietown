@@ -13,6 +13,8 @@ import {
   Pencil,
   MoreHorizontal,
   Sparkles,
+  FolderOpen,
+  Folder,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +26,9 @@ import {
   ContextMenuItem,
   ContextMenuSeparator,
   ContextMenuTrigger,
+  ContextMenuSub,
+  ContextMenuSubContent,
+  ContextMenuSubTrigger,
 } from "@/components/ui/context-menu";
 import {
   DropdownMenu,
@@ -38,7 +43,12 @@ import {
   TooltipTrigger,
   TooltipProvider,
 } from "@/components/ui/tooltip";
-import type { FileRecord, ViewMode, SearchResult } from "../types";
+import type {
+  FileRecord,
+  ViewMode,
+  SearchResult,
+  FolderRecord,
+} from "../types";
 import { formatBytes, formatDate } from "../lib/utils";
 
 // ── Icons ──────────────────────────────────────────────
@@ -82,8 +92,6 @@ function FileIcon({
   return <Package {...p} className="icon-pkg" />;
 }
 
-// ── Similarity badge ───────────────────────────────────
-
 function SimilarityBadge({ score }: { score: number }) {
   const pct = Math.round(score * 100);
   const color =
@@ -100,8 +108,6 @@ function SimilarityBadge({ score }: { score: number }) {
     </span>
   );
 }
-
-// ── Inline rename ──────────────────────────────────────
 
 function RenameInput({
   name,
@@ -129,8 +135,6 @@ function RenameInput({
   );
 }
 
-// ── Image preview ──────────────────────────────────────
-
 function ImageThumb({
   name,
   onGetPreview,
@@ -142,7 +146,6 @@ function ImageThumb({
 }) {
   const [url, setUrl] = useState("");
   const [error, setError] = useState(false);
-
   useEffect(() => {
     let cancelled = false;
     onGetPreview(name)
@@ -154,7 +157,6 @@ function ImageThumb({
       cancelled = true;
     };
   }, [name, onGetPreview]);
-
   if (error || !url) return null;
   return (
     <img
@@ -167,37 +169,81 @@ function ImageThumb({
   );
 }
 
+// ── Move-to submenu helper ─────────────────────────────
+
+function MoveToMenu({
+  folders,
+  currentFolder,
+  onMove,
+}: {
+  folders: FolderRecord[];
+  currentFolder: string;
+  onMove: (path: string) => void;
+}) {
+  const options = [
+    { path: "", label: "Root" },
+    ...folders.filter((f) => f.path !== currentFolder),
+  ];
+  return (
+    <>
+      {options.map((opt) => (
+        <ContextMenuItem
+          key={opt.path}
+          onClick={() => onMove("path" in opt ? opt.path : "")}
+        >
+          <Folder size={12} className="mr-2" />
+          {"label" in opt ? opt.label : (opt as FolderRecord).name}
+        </ContextMenuItem>
+      ))}
+    </>
+  );
+}
+
 // ── File Card (grid) ───────────────────────────────────
 
 function FileCard({
   file,
   similarity,
   inAiMode,
+  folders,
+  currentFolder,
   onDelete,
   onRename,
   onOpen,
   onGetPreview,
   onAskAi,
+  onMoveToFolder,
 }: {
   file: FileRecord;
   similarity?: number;
   inAiMode: boolean;
+  folders: FolderRecord[];
+  currentFolder: string;
   onDelete: (n: string) => void;
   onRename: (old: string, newN: string) => void;
   onOpen: (n: string) => void;
   onGetPreview: (n: string) => Promise<string>;
   onAskAi: (n: string) => void;
+  onMoveToFolder: (name: string, path: string) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
+  const [dragging, setDragging] = useState(false);
   const ext = file.name.split(".").pop()?.toUpperCase() ?? "FILE";
 
   return (
     <ContextMenu>
       <ContextMenuTrigger>
         <div
+          draggable
+          onDragStart={(e) => {
+            e.dataTransfer.setData("text/plain", file.name);
+            setDragging(true);
+          }}
+          onDragEnd={() => setDragging(false)}
           className={`file-card relative bg-[#252526] border rounded-lg overflow-hidden cursor-pointer
             transition-all hover:-translate-y-0.5 hover:shadow-xl hover:shadow-black/30 hover:border-[#505050] fade-in
-            ${inAiMode && similarity !== undefined && similarity >= 0.5 ? "border-indigo-500/30" : "border-[#3e3e42]"}`}
+            ${inAiMode && similarity !== undefined && similarity >= 0.5 ? "border-indigo-500/30" : "border-[#3e3e42]"}
+            ${dragging ? "opacity-50 scale-95" : ""}`}
           onDoubleClick={() => onOpen(file.name)}
         >
           <div className="h-[90px] bg-[#2d2d30] border-b border-[#3e3e42] overflow-hidden relative flex items-center justify-center">
@@ -302,6 +348,18 @@ function FileCard({
         <ContextMenuItem onClick={() => setRenaming(true)}>
           <Pencil size={13} className="mr-2" /> Rename
         </ContextMenuItem>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>
+            <FolderOpen size={13} className="mr-2" /> Move to
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            <MoveToMenu
+              folders={folders}
+              currentFolder={currentFolder}
+              onMove={(path) => onMoveToFolder(file.name, path)}
+            />
+          </ContextMenuSubContent>
+        </ContextMenuSub>
         <ContextMenuSeparator />
         <ContextMenuItem
           onClick={() => onDelete(file.name)}
@@ -320,20 +378,26 @@ function FileRow({
   file,
   similarity,
   inAiMode,
+  folders,
+  currentFolder,
   onDelete,
   onRename,
   onOpen,
   onGetPreview,
   onAskAi,
+  onMoveToFolder,
 }: {
   file: FileRecord;
   similarity?: number;
   inAiMode: boolean;
+  folders: FolderRecord[];
+  currentFolder: string;
   onDelete: (n: string) => void;
   onRename: (old: string, newN: string) => void;
   onOpen: (n: string) => void;
   onGetPreview: (n: string) => Promise<string>;
   onAskAi: (n: string) => void;
+  onMoveToFolder: (name: string, path: string) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
 
@@ -341,7 +405,9 @@ function FileRow({
     <ContextMenu>
       <ContextMenuTrigger>
         <div
-          className={`grid items-center gap-2 px-3 py-2 rounded-md border transition-colors fade-in
+          draggable
+          onDragStart={(e) => e.dataTransfer.setData("text/plain", file.name)}
+          className={`grid items-center gap-2 px-3 py-2 rounded-md border transition-colors fade-in cursor-grab active:cursor-grabbing
             ${
               inAiMode && similarity !== undefined && similarity >= 0.5
                 ? "border-indigo-500/20 hover:bg-[#2d2d30] hover:border-indigo-500/30"
@@ -442,6 +508,18 @@ function FileRow({
         <ContextMenuItem onClick={() => setRenaming(true)}>
           <Pencil size={13} className="mr-2" /> Rename
         </ContextMenuItem>
+        <ContextMenuSub>
+          <ContextMenuSubTrigger>
+            <FolderOpen size={13} className="mr-2" /> Move to
+          </ContextMenuSubTrigger>
+          <ContextMenuSubContent>
+            <MoveToMenu
+              folders={folders}
+              currentFolder={currentFolder}
+              onMove={(path) => onMoveToFolder(file.name, path)}
+            />
+          </ContextMenuSubContent>
+        </ContextMenuSub>
         <ContextMenuSeparator />
         <ContextMenuItem
           onClick={() => onDelete(file.name)}
@@ -461,11 +539,15 @@ interface Props {
   view: ViewMode;
   searchQuery: string;
   aiResults: SearchResult[];
+  currentFolder: string;
+  folders: FolderRecord[];
   onDelete: (n: string) => void;
   onRename: (old: string, newN: string) => void;
   onOpen: (n: string) => void;
   onGetPreview: (n: string) => Promise<string>;
   onAskAi: (n: string) => void;
+  onMoveToFolder: (fileName: string, targetPath: string) => void;
+  onNavigateFolder: (path: string) => void;
 }
 
 export function FileArea({
@@ -473,26 +555,33 @@ export function FileArea({
   view,
   searchQuery,
   aiResults,
+  currentFolder,
+  folders,
   onDelete,
   onRename,
   onOpen,
   onGetPreview,
   onAskAi,
+  onMoveToFolder,
+  onNavigateFolder,
 }: Props) {
   const similarityMap: Record<string, number> = Object.fromEntries(
     aiResults.map((r) => [r.file_name, r.similarity]),
   );
   const inAiMode = aiResults.length > 0;
 
-  if (files.length === 0) {
+  // Subfolders visible at current depth
+  const subfolders = folders.filter((f) => f.parent === currentFolder);
+
+  if (files.length === 0 && subfolders.length === 0) {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-3 p-16">
         <Package size={48} strokeWidth={1} className="text-[#3e3e42]" />
-        <p className="text-sm font-medium text-[#6a6a6a]">No files found</p>
+        <p className="text-sm font-medium text-[#6a6a6a]">Empty folder</p>
         <p className="text-xs text-[#4a4a4a] text-center max-w-xs leading-relaxed">
           {searchQuery
             ? `No files match "${searchQuery}"`
-            : "Drop files into your vault folder and they'll sync automatically."}
+            : "Drop files here or create a subfolder."}
         </p>
       </div>
     );
@@ -500,11 +589,14 @@ export function FileArea({
 
   const shared = {
     inAiMode,
+    folders,
+    currentFolder,
     onDelete,
     onRename,
     onOpen,
     onGetPreview,
     onAskAi,
+    onMoveToFolder,
   };
 
   if (view === "list") {
@@ -523,6 +615,29 @@ export function FileArea({
         </div>
         <ScrollArea className="flex-1">
           <div className="px-2 py-1.5 flex flex-col gap-0.5">
+            {/* Subfolder rows */}
+            {subfolders.map((folder) => (
+              <div
+                key={folder.path}
+                className="grid items-center gap-2 px-3 py-2 rounded-md border border-transparent hover:bg-[#2d2d30] hover:border-[#3e3e42] transition-colors cursor-pointer fade-in"
+                style={{ gridTemplateColumns: "32px 1fr 90px 72px 90px 96px" }}
+                onDoubleClick={() => onNavigateFolder(folder.path)}
+              >
+                <Folder size={15} className="text-indigo-400/70" />
+                <span className="text-xs font-medium text-[#d4d4d4]">
+                  {folder.name}
+                </span>
+                <Badge
+                  variant="outline"
+                  className="text-[9px] font-mono h-4 px-1.5 w-fit"
+                >
+                  folder
+                </Badge>
+                <span />
+                <span />
+                <span />
+              </div>
+            ))}
             {files.map((f) => (
               <FileRow
                 key={f.name}
@@ -543,6 +658,29 @@ export function FileArea({
         className="p-4 grid gap-3"
         style={{ gridTemplateColumns: "repeat(auto-fill, minmax(140px, 1fr))" }}
       >
+        {/* Subfolder cards */}
+        {subfolders.map((folder) => (
+          <div
+            key={folder.path}
+            className="relative bg-[#252526] border border-[#3e3e42] rounded-lg overflow-hidden cursor-pointer
+              transition-all hover:-translate-y-0.5 hover:shadow-xl hover:shadow-black/30 hover:border-indigo-500/30 fade-in"
+            onDoubleClick={() => onNavigateFolder(folder.path)}
+          >
+            <div className="h-[90px] bg-[#2d2d30] border-b border-[#3e3e42] flex items-center justify-center">
+              <Folder
+                size={36}
+                strokeWidth={1.5}
+                className="text-indigo-400/60"
+              />
+            </div>
+            <div className="px-2.5 pt-2 pb-3">
+              <p className="text-[11px] font-medium truncate text-[#d4d4d4]">
+                {folder.name}
+              </p>
+              <p className="text-[10px] text-[#4a4a4a] mt-0.5">folder</p>
+            </div>
+          </div>
+        ))}
         {files.map((f) => (
           <FileCard
             key={f.name}

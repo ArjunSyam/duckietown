@@ -13,7 +13,6 @@ func (a *App) GetVaultPath() string {
 	if a.vaultPath != "" {
 		return a.vaultPath
 	}
-	// Try loading from saved config for this user
 	if a.userID != "" {
 		cfg := loadConfig(a.userID)
 		if cfg.VaultPath != "" {
@@ -30,9 +29,15 @@ func (a *App) SetVaultPath(path string) error {
 	}
 	a.vaultPath = path
 	saveConfig(a.userID, Config{VaultPath: path})
+
+	// Start sidecar and ingest worker before watcher
+	if err := a.startSidecar(); err != nil {
+		fmt.Printf("⚠️ Sidecar start failed: %v\n", err)
+	}
+	a.startIngestWorker()
 	a.startWatcher()
 
-	// Upload any existing files in the folder
+	// Upload any existing files in the root folder
 	go func() {
 		entries, err := os.ReadDir(path)
 		if err != nil {
@@ -43,7 +48,8 @@ func (a *App) SetVaultPath(path string) error {
 				continue
 			}
 			fullPath := filepath.Join(path, entry.Name())
-			a.supaUploadFile(fullPath, entry.Name())
+			// Root-level files have empty folder path
+			a.supaUploadFile(fullPath, entry.Name(), "")
 		}
 		wailsruntime.EventsEmit(a.ctx, "file-uploaded", "initial-scan")
 	}()

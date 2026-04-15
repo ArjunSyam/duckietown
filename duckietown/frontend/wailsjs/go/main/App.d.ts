@@ -4,9 +4,13 @@ import {main} from '../models';
 
 export function ChatWithAgent(arg1:string,arg2:Array<main.ChatMessage>,arg3:string):Promise<void>;
 
+export function CreateFolder(arg1:string):Promise<void>;
+
 export function DeleteFile(arg1:string):Promise<void>;
 
 export function DeleteFileEmbeddings(arg1:string):Promise<void>;
+
+export function DeleteFolder(arg1:string):Promise<void>;
 
 export function GetCurrentUser():Promise<Record<string, string>>;
 
@@ -20,9 +24,17 @@ export function IngestFile(arg1:string,arg2:string):Promise<void>;
 
 export function ListFiles():Promise<Array<main.FileRecord>>;
 
+export function ListFolders():Promise<Array<main.FolderRecord>>;
+
+export function MoveFileEmbeddings(arg1:string,arg2:string):Promise<void>;
+
+export function MoveFileToFolder(arg1:string,arg2:string):Promise<void>;
+
 export function OpenFile(arg1:string):Promise<void>;
 
 export function OpenVaultFolder():Promise<void>;
+
+export function OrganiseFolder(arg1:string,arg2:string,arg3:string):Promise<main.OrganiseFolderResult>;
 
 export function RenameFile(arg1:string,arg2:string):Promise<void>;
 

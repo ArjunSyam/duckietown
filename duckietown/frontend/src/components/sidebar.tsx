@@ -25,8 +25,14 @@ import {
 } from "@/components/ui/tooltip";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import type { FileRecord, FileTypeFilter, ViewMode } from "../types";
+import type {
+  FileRecord,
+  FileTypeFilter,
+  ViewMode,
+  FolderRecord,
+} from "../types";
 import { formatBytes } from "../lib/utils";
+import { FolderTree } from "./foldertree";
 
 const NAV: { id: FileTypeFilter; label: string; icon: React.ReactNode }[] = [
   { id: "all", label: "All Files", icon: <Files size={14} /> },
@@ -69,8 +75,14 @@ function countByType(files: FileRecord[], type: FileTypeFilter): number {
 
 interface Props {
   files: FileRecord[];
+  folders: FolderRecord[];
+  currentFolder: string;
   selectedType: FileTypeFilter;
   onSelectType: (t: FileTypeFilter) => void;
+  onSelectFolder: (path: string) => void;
+  onCreateFolder: (parentPath: string, name: string) => void;
+  onDeleteFolder: (path: string) => void;
+  onDropFileToFolder: (fileName: string, targetFolderPath: string) => void;
   view: ViewMode;
   onViewChange: (v: ViewMode) => void;
   isWatching: boolean;
@@ -84,8 +96,14 @@ interface Props {
 
 export function Sidebar({
   files,
+  folders,
+  currentFolder,
   selectedType,
   onSelectType,
+  onSelectFolder,
+  onCreateFolder,
+  onDeleteFolder,
+  onDropFileToFolder,
   view,
   onViewChange,
   isWatching,
@@ -146,10 +164,26 @@ export function Sidebar({
           </Tooltip>
         </div>
 
-        {/* Nav */}
         <ScrollArea className="flex-1 px-2 py-2">
+          {/* Folders section */}
           <p className="text-[10px] font-semibold uppercase tracking-[1.5px] text-[#4a4a4a] px-2 pb-1.5 pt-1">
-            Browse
+            Folders
+          </p>
+          <FolderTree
+            folders={folders}
+            currentFolder={currentFolder}
+            onSelectFolder={(path) => {
+              onSelectFolder(path);
+              onSelectType("all"); // reset type filter when navigating folders
+            }}
+            onCreateFolder={onCreateFolder}
+            onDeleteFolder={onDeleteFolder}
+            onDropFile={onDropFileToFolder}
+          />
+
+          {/* Browse by type */}
+          <p className="text-[10px] font-semibold uppercase tracking-[1.5px] text-[#4a4a4a] px-2 pb-1.5 pt-4">
+            Filter by type
           </p>
           {NAV.map((item) => (
             <button
@@ -157,7 +191,7 @@ export function Sidebar({
               onClick={() => onSelectType(item.id)}
               className={`w-full flex items-center gap-2 px-2 py-[7px] rounded-sm transition-colors mb-0.5 text-left
                 ${
-                  selectedType === item.id
+                  selectedType === item.id && currentFolder === ""
                     ? "nav-active font-medium"
                     : "text-[#9d9d9d] hover:text-[#d4d4d4] hover:bg-[#2d2d30]"
                 }`}
@@ -166,11 +200,11 @@ export function Sidebar({
               <span className="flex-1 text-xs">{item.label}</span>
               <span
                 className={`text-[10px] font-mono px-1.5 py-0.5 rounded-sm
-                ${
-                  selectedType === item.id
-                    ? "bg-indigo-500/15 text-indigo-300"
-                    : "bg-[#2d2d30] text-[#4a4a4a]"
-                }`}
+                  ${
+                    selectedType === item.id && currentFolder === ""
+                      ? "bg-indigo-500/15 text-indigo-300"
+                      : "bg-[#2d2d30] text-[#4a4a4a]"
+                  }`}
               >
                 {countByType(files, item.id)}
               </span>
@@ -205,7 +239,6 @@ export function Sidebar({
 
         {/* Footer */}
         <div className="px-3 py-3 flex flex-col gap-3">
-          {/* Sync status */}
           <div className="flex items-center gap-2 text-xs text-[#6a6a6a]">
             {syncing ? (
               <Loader2 size={12} className="spin text-yellow-400 shrink-0" />
@@ -223,7 +256,6 @@ export function Sidebar({
             </span>
           </div>
 
-          {/* Storage */}
           <div className="flex flex-col gap-1.5">
             <div className="flex justify-between">
               <span className="text-[10px] uppercase tracking-[1px] text-[#4a4a4a]">
@@ -236,7 +268,6 @@ export function Sidebar({
             <Progress value={storagePercent} className="h-[3px]" />
           </div>
 
-          {/* User + sign out */}
           <div className="flex items-center gap-2 pt-1">
             <div className="flex-1 min-w-0">
               <p className="text-[10px] text-[#4a4a4a] truncate">{userEmail}</p>

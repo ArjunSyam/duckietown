@@ -6,12 +6,20 @@ export function ChatWithAgent(arg1, arg2, arg3) {
   return window['go']['main']['App']['ChatWithAgent'](arg1, arg2, arg3);
 }
 
+export function CreateFolder(arg1) {
+  return window['go']['main']['App']['CreateFolder'](arg1);
+}
+
 export function DeleteFile(arg1) {
   return window['go']['main']['App']['DeleteFile'](arg1);
 }
 
 export function DeleteFileEmbeddings(arg1) {
   return window['go']['main']['App']['DeleteFileEmbeddings'](arg1);
+}
+
+export function DeleteFolder(arg1) {
+  return window['go']['main']['App']['DeleteFolder'](arg1);
 }
 
 export function GetCurrentUser() {
@@ -38,12 +46,28 @@ export function ListFiles() {
   return window['go']['main']['App']['ListFiles']();
 }
 
+export function ListFolders() {
+  return window['go']['main']['App']['ListFolders']();
+}
+
+export function MoveFileEmbeddings(arg1, arg2) {
+  return window['go']['main']['App']['MoveFileEmbeddings'](arg1, arg2);
+}
+
+export function MoveFileToFolder(arg1, arg2) {
+  return window['go']['main']['App']['MoveFileToFolder'](arg1, arg2);
+}
+
 export function OpenFile(arg1) {
   return window['go']['main']['App']['OpenFile'](arg1);
 }
 
 export function OpenVaultFolder() {
   return window['go']['main']['App']['OpenVaultFolder']();
+}
+
+export function OrganiseFolder(arg1, arg2, arg3) {
+  return window['go']['main']['App']['OrganiseFolder'](arg1, arg2, arg3);
 }
 
 export function RenameFile(arg1, arg2) {
