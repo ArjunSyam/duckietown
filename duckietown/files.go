@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -15,10 +16,13 @@ type FileRecord struct {
 	Name        string `json:"name"`
 	Size        int64  `json:"size"`
 	MimeType    string `json:"mime_type"`
+	FolderPath  string `json:"folder_path"`
 	CreatedAt   string `json:"created_at"`
 	UpdatedAt   string `json:"updated_at"`
 	StoragePath string `json:"storage_path"`
 }
+
+// ── Ingest queue ───────────────────────────────────────────────────────────────
 
 var ingestQueue = make(chan ingestJob, 64)
 
@@ -47,14 +51,21 @@ func queueIngest(filePath, fileName string) {
 	}
 }
 
+// ── File operations ────────────────────────────────────────────────────────────
+
 func (a *App) ListFiles() ([]FileRecord, error) {
 	return a.supaListFiles()
 }
 
 func (a *App) DeleteFile(fileName string) error {
-	localPath := filepath.Join(a.vaultPath, fileName)
-	os.Remove(localPath)
-	if err := a.supaDeleteStorageFile(fileName); err != nil {
+	absPath, folderPath, err := a.findFileInVault(fileName)
+	if err != nil {
+		// Try root
+		absPath = filepath.Join(a.vaultPath, fileName)
+		folderPath = ""
+	}
+	os.Remove(absPath)
+	if err := a.supaDeleteStorageFile(fileName, folderPath); err != nil {
 		return err
 	}
 	if err := a.supaDeleteFileRecord(fileName); err != nil {
@@ -64,37 +75,44 @@ func (a *App) DeleteFile(fileName string) error {
 	return nil
 }
 
+// RenameFile renames a file in place (same folder). Updates ChromaDB metadata, not re-embed.
 func (a *App) RenameFile(oldName, newName string) error {
 	if a.vaultPath == "" {
 		return fmt.Errorf("no vault path")
 	}
-	oldPath := filepath.Join(a.vaultPath, oldName)
-	newPath := filepath.Join(a.vaultPath, newName)
 
-	if err := os.Rename(oldPath, newPath); err != nil {
+	oldAbsPath, folderPath, err := a.findFileInVault(oldName)
+	if err != nil {
+		return fmt.Errorf("file not found: %w", err)
+	}
+	newAbsPath := filepath.Join(filepath.Dir(oldAbsPath), newName)
+
+	if err := os.Rename(oldAbsPath, newAbsPath); err != nil {
 		return err
 	}
-	if err := a.supaDeleteFileRecord(oldName); err != nil {
-		return err
-	}
-	if err := a.supaDeleteStorageFile(oldName); err != nil {
-		return err
-	}
+
+	newSP := a.storagePath(newName, folderPath)
+	// Upload under new name, delete old
+	a.supaUploadFile(newAbsPath, newName, folderPath)
+	a.supaDeleteStorageFile(oldName, folderPath)
+	a.supaRenameFileRecord(oldName, newName, folderPath, newSP)
+
+	// Update ChromaDB metadata only — no re-ingestion
 	go func() {
-		a.supaUploadFile(newPath, newName)
-		queueIngest(newPath, newName)
-		a.DeleteFileEmbeddings(oldName)
+		if err := a.MoveFileEmbeddings(oldName, newName); err != nil {
+			fmt.Printf("⚠️ Failed to update embeddings for rename %s → %s: %v\n", oldName, newName, err)
+		}
 	}()
 	return nil
 }
 
 func (a *App) OpenFile(fileName string) error {
-	localPath := filepath.Join(a.vaultPath, fileName)
-	if _, err := os.Stat(localPath); err == nil {
-		return openPath(localPath)
+	absPath, folderPath, err := a.findFileInVault(fileName)
+	if err == nil {
+		return openPath(absPath)
 	}
 
-	url, err := a.supaGetFileURL(fileName)
+	url, err := a.supaGetFileURL(fileName, folderPath)
 	if err != nil {
 		return err
 	}
@@ -117,45 +135,65 @@ func (a *App) OpenFile(fileName string) error {
 }
 
 func (a *App) GetFilePreview(fileName string) (string, error) {
-	return a.supaGetFileURL(fileName)
+	_, folderPath, err := a.findFileInVault(fileName)
+	if err != nil {
+		folderPath = ""
+	}
+	return a.supaGetFileURL(fileName, folderPath)
 }
+
+// ── Full sync ──────────────────────────────────────────────────────────────────
 
 func (a *App) fullSync() {
 	if a.vaultPath == "" || a.userID == "" {
 		return
 	}
 
-	localFiles := make(map[string]string)
-	entries, err := os.ReadDir(a.vaultPath)
-	if err == nil {
-		for _, entry := range entries {
-			name := entry.Name()
-			if entry.IsDir() || shouldSkipFile(name) {
-				continue
-			}
-			localFiles[name] = filepath.Join(a.vaultPath, name)
+	// Build local file map: name → {absPath, folderPath}
+	type localEntry struct{ abs, folder string }
+	localFiles := make(map[string]localEntry)
+
+	filepath.WalkDir(a.vaultPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
 		}
-	}
+		if d.IsDir() {
+			if strings.HasPrefix(d.Name(), ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		name := d.Name()
+		if shouldSkipFile(name) {
+			return nil
+		}
+		fp := a.folderPathForFile(path)
+		localFiles[name] = localEntry{path, fp}
+		return nil
+	})
 
 	dbFiles, err := a.supaListFiles()
 	if err != nil {
 		fmt.Printf("dbfile err: %v\n", err)
 		return
 	}
-	dbSet := make(map[string]bool)
+	dbSet := make(map[string]string) // name → folderPath
 	for _, f := range dbFiles {
-		dbSet[f.Name] = true
+		dbSet[f.Name] = f.FolderPath
 	}
 
 	storageFiles, err := a.supaListStorageFiles()
 	if err != nil {
 		return
 	}
+	// storageSet: just the filename (last segment) for quick lookup
 	storageSet := make(map[string]bool)
-	for _, name := range storageFiles {
-		storageSet[name] = true
+	for _, sp := range storageFiles {
+		parts := strings.Split(sp, "/")
+		storageSet[parts[len(parts)-1]] = true
 	}
 
+	// Get already-indexed files from ChromaDB
 	indexed, err := a.GetIndexedFiles()
 	if err != nil {
 		fmt.Printf("⚠️ Could not get indexed files, will re-ingest all: %v\n", err)
@@ -163,16 +201,18 @@ func (a *App) fullSync() {
 	}
 	fmt.Printf("📚 Already indexed: %d files\n", len(indexed))
 
-	for name, path := range localFiles {
-		if !storageSet[name] || !dbSet[name] {
-			a.supaUploadFile(path, name)
+	// Upload + ingest files not yet in Supabase/ChromaDB
+	for name, entry := range localFiles {
+		if !storageSet[name] || dbSet[name] == "" && entry.folder == "" {
+			a.supaUploadFile(entry.abs, name, entry.folder)
 		}
 		if !indexed[name] {
 			fmt.Printf("🧠 Queuing ingest: %s\n", name)
-			queueIngest(path, name)
+			queueIngest(entry.abs, name)
 		}
 	}
 
+	// Delete DB records for files no longer local or in storage
 	for _, f := range dbFiles {
 		_, existsLocally := localFiles[f.Name]
 		if !existsLocally && !storageSet[f.Name] {
@@ -180,9 +220,13 @@ func (a *App) fullSync() {
 		}
 	}
 
-	for _, name := range storageFiles {
+	// Delete storage files no longer local
+	for _, sp := range storageFiles {
+		parts := strings.Split(sp, "/")
+		name := parts[len(parts)-1]
 		if _, existsLocally := localFiles[name]; !existsLocally {
-			a.supaDeleteStorageFile(name)
+			folder := strings.Join(parts[:len(parts)-1], "/")
+			a.supaDeleteStorageFile(name, folder)
 			a.supaDeleteFileRecord(name)
 			go a.DeleteFileEmbeddings(name)
 		}

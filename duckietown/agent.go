@@ -75,12 +75,7 @@ type chatRequest struct {
 	FileName string        `json:"file_name,omitempty"`
 }
 
-// ChatWithAgent sends a message to the RAG chat endpoint and streams
-// the response back to the frontend via Wails events:
-//   - "chat-token"   { content: string }
-//   - "chat-sources" []{ file_name, similarity }
-//   - "chat-done"    nil
-//   - "chat-error"   string
+// ChatWithAgent streams a RAG chat response back to the frontend via Wails events.
 func (a *App) ChatWithAgent(message string, history []ChatMessage, fileName string) {
 	if a.userID == "" {
 		wailsruntime.EventsEmit(a.ctx, "chat-error", "not authenticated")
@@ -141,4 +136,66 @@ func (a *App) ChatWithAgent(message string, history []ChatMessage, fileName stri
 		}
 		wailsruntime.EventsEmit(a.ctx, "chat-done", nil)
 	}()
+}
+
+// OrganiseFolderResult describes the outcome of an AI-driven organisation.
+type OrganiseFolderResult struct {
+	FolderName string   `json:"folder_name"`
+	Files      []string `json:"files"`
+	Created    bool     `json:"created"`
+	Error      string   `json:"error,omitempty"`
+}
+
+// OrganiseFolder uses semantic search to find files matching a query, creates a
+// subfolder with the given name, and moves matching files into it.
+// Exposed to frontend via Wails.
+// Example: OrganiseFolder("work/projects", "cat photos", "cats")
+//
+//	→ searches for files similar to "cat photos"
+//	→ creates folder "work/projects/cats"
+//	→ moves matching files there
+func (a *App) OrganiseFolder(currentFolderPath, query, newFolderName string) (OrganiseFolderResult, error) {
+	result := OrganiseFolderResult{FolderName: newFolderName}
+
+	if a.userID == "" {
+		return result, fmt.Errorf("not authenticated")
+	}
+
+	// Semantic search for matching files
+	matches, err := a.SemanticSearch(query, 50)
+	if err != nil {
+		return result, fmt.Errorf("search failed: %w", err)
+	}
+	if len(matches) == 0 {
+		return result, fmt.Errorf("no matching files found for query: %s", query)
+	}
+
+	// Build target folder path
+	var targetPath string
+	if currentFolderPath == "" {
+		targetPath = newFolderName
+	} else {
+		targetPath = currentFolderPath + "/" + newFolderName
+	}
+
+	// Create the folder
+	if err := a.CreateFolder(targetPath); err != nil {
+		return result, fmt.Errorf("could not create folder: %w", err)
+	}
+	result.Created = true
+
+	// Move each matched file into the new folder
+	var movedFiles []string
+	for _, match := range matches {
+		if err := a.MoveFileToFolder(match.FileName, targetPath); err != nil {
+			fmt.Printf("⚠️ Could not move %s: %v\n", match.FileName, err)
+			continue
+		}
+		movedFiles = append(movedFiles, match.FileName)
+	}
+	result.Files = movedFiles
+
+	wailsruntime.EventsEmit(a.ctx, "organise-complete", result)
+	fmt.Printf("✅ Organised %d files into %s\n", len(movedFiles), targetPath)
+	return result, nil
 }

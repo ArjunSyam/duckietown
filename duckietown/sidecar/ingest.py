@@ -3,16 +3,8 @@ ingest.py — Ingestion pipeline using Jina CLIP v2 + Gemma image captioning.
 
 POST   /ingest/file    { file_path, file_name, user_id }
 DELETE /ingest/file    { file_name, user_id }
-GET    /ingest/indexed?user_id=...  → { files: [name, ...] }
-
-Pipeline for images:
-  1. Send image to Gemma 3 (OpenRouter) → get rich text description
-  2. Embed that description via Jina text encoder
-  This means "show me images with 2 people" actually works.
-
-Pipeline for text files:
-  1. Extract text chunks via extract.py
-  2. Embed via Jina text encoder
+PATCH  /ingest/move    { old_name, new_name, user_id }  ← update metadata only, no re-embed
+GET    /ingest/indexed?user_id=...
 """
 
 import base64
@@ -45,7 +37,7 @@ JINA_CLIP_MODEL = "jina-clip-v2"
 
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-CAPTION_MODEL = "google/gemma-3-12b-it"  # fast, vision-capable, cheap
+CAPTION_MODEL = "google/gemma-3-12b-it"
 
 JINA_BATCH_SIZE = 8
 CHROMA_BATCH_SIZE = 100
@@ -70,7 +62,7 @@ def _get_collection(user_id: str) -> chromadb.Collection:
     )
 
 
-# ── Image captioning via Gemma ─────────────────────────────────────────────────
+# ── Image captioning ───────────────────────────────────────────────────────────
 
 
 def _image_to_base64(file_path: str) -> Optional[str]:
@@ -88,18 +80,11 @@ def _image_to_base64(file_path: str) -> Optional[str]:
 
 
 def _caption_image(file_path: str, file_name: str) -> str:
-    """
-    Send image to Gemma 3 via OpenRouter and get a rich text description.
-    Falls back to filename if captioning fails.
-    """
     if not OPENROUTER_API_KEY:
-        print("[ingest] No OPENROUTER_API_KEY, skipping caption")
         return f"Image: {Path(file_path).stem}"
-
     b64 = _image_to_base64(file_path)
     if not b64:
         return f"Image: {Path(file_path).stem}"
-
     try:
         resp = requests.post(
             OPENROUTER_URL,
@@ -115,10 +100,7 @@ def _caption_image(file_path: str, file_name: str) -> str:
                     {
                         "role": "user",
                         "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {"url": b64},
-                            },
+                            {"type": "image_url", "image_url": {"url": b64}},
                             {
                                 "type": "text",
                                 "text": (
@@ -147,19 +129,12 @@ def _caption_image(file_path: str, file_name: str) -> str:
 
 
 def _embed_batch_with_retry(chunks: List[Dict[str, Any]]) -> List[List[float]]:
-    """Embed a batch via Jina text encoder with exponential backoff on 429."""
-    # All chunks at this point have a 'text' field (images were captioned already)
     inputs = [{"text": chunk["text"]} for chunk in chunks]
-
     headers = {
         "Authorization": f"Bearer {JINA_API_KEY}",
         "Content-Type": "application/json",
     }
-    payload = {
-        "model": JINA_CLIP_MODEL,
-        "input": inputs,
-        "normalized": True,
-    }
+    payload = {"model": JINA_CLIP_MODEL, "input": inputs, "normalized": True}
 
     delay = RETRY_BASE_DELAY
     for attempt in range(1, MAX_RETRIES + 1):
@@ -168,8 +143,7 @@ def _embed_batch_with_retry(chunks: List[Dict[str, Any]]) -> List[List[float]]:
                 JINA_CLIP_URL, headers=headers, json=payload, timeout=60
             )
             if resp.status_code == 429:
-                retry_after = int(resp.headers.get("Retry-After", delay))
-                wait = max(retry_after, delay)
+                wait = max(int(resp.headers.get("Retry-After", delay)), delay)
                 print(
                     f"[ingest] Rate limited, waiting {wait:.1f}s (attempt {attempt}/{MAX_RETRIES})"
                 )
@@ -177,8 +151,7 @@ def _embed_batch_with_retry(chunks: List[Dict[str, Any]]) -> List[List[float]]:
                 delay *= 2
                 continue
             resp.raise_for_status()
-            data = resp.json()
-            ordered = sorted(data["data"], key=lambda x: x["index"])
+            ordered = sorted(resp.json()["data"], key=lambda x: x["index"])
             return [item["embedding"] for item in ordered]
         except requests.exceptions.HTTPError as e:
             if attempt == MAX_RETRIES:
@@ -186,7 +159,6 @@ def _embed_batch_with_retry(chunks: List[Dict[str, Any]]) -> List[List[float]]:
             print(f"[ingest] HTTP error {e}, retrying in {delay}s...")
             time.sleep(delay)
             delay *= 2
-
     raise RuntimeError(f"Failed after {MAX_RETRIES} retries")
 
 
@@ -194,36 +166,22 @@ def _embed_chunks(chunks: List[Dict[str, Any]], file_name: str) -> List[List[flo
     all_embeddings = []
     total_batches = -(-len(chunks) // JINA_BATCH_SIZE)
     for i in range(0, len(chunks), JINA_BATCH_SIZE):
-        batch_num = i // JINA_BATCH_SIZE + 1
-        print(f"[ingest] {file_name}: batch {batch_num}/{total_batches}")
-        batch = chunks[i : i + JINA_BATCH_SIZE]
-        batch_embs = _embed_batch_with_retry(batch)
+        print(f"[ingest] {file_name}: batch {i // JINA_BATCH_SIZE + 1}/{total_batches}")
+        batch_embs = _embed_batch_with_retry(chunks[i : i + JINA_BATCH_SIZE])
         all_embeddings.extend(batch_embs)
         if i + JINA_BATCH_SIZE < len(chunks):
             time.sleep(0.5)
     return all_embeddings
 
 
-# ── Chunk prep — caption images before embedding ───────────────────────────────
-
-
 def _prepare_chunks(
     chunks: List[Dict[str, Any]], file_name: str
 ) -> List[Dict[str, Any]]:
-    """
-    For image chunks: replace the stub text with a real Gemma caption.
-    For all other chunks: pass through unchanged.
-    """
     prepared = []
     for chunk in chunks:
         if chunk.get("modality") == "image" and chunk.get("file_path"):
             caption = _caption_image(chunk["file_path"], file_name)
-            prepared.append(
-                {
-                    **chunk,
-                    "text": caption,  # replace "Image: filename" with real description
-                }
-            )
+            prepared.append({**chunk, "text": caption})
         else:
             prepared.append(chunk)
     return prepared
@@ -247,6 +205,12 @@ class IngestRequest(BaseModel):
 
 class DeleteRequest(BaseModel):
     file_name: str
+    user_id: str
+
+
+class MoveRequest(BaseModel):
+    old_name: str  # previous file_name stored in metadata
+    new_name: str  # new file_name (after rename or folder move)
     user_id: str
 
 
@@ -279,9 +243,7 @@ def ingest_file(req: IngestRequest):
         if not chunks:
             return {"status": "skipped", "detail": "no extractable content"}
 
-        # Caption images before embedding
         chunks = _prepare_chunks(chunks, req.file_name)
-
         print(f"[ingest] {req.file_name}: {len(chunks)} chunks, embedding with Jina...")
         embeddings = _embed_chunks(chunks, req.file_name)
 
@@ -311,6 +273,66 @@ def ingest_file(req: IngestRequest):
 
     except Exception as e:
         print(f"[ingest] Error ingesting {req.file_name}: {e}")
+        return {"status": "error", "detail": str(e)}
+
+
+@router.patch("/move")
+def move_file_embeddings(req: MoveRequest):
+    """
+    Update ChromaDB metadata when a file is renamed or moved to a different folder.
+    Reuses existing embeddings — no re-ingestion needed.
+    """
+    try:
+        collection = _get_collection(req.user_id)
+
+        # Get all chunks for the old file name
+        results = collection.get(
+            where={"file_name": req.old_name},
+            include=["embeddings", "documents", "metadatas"],
+        )
+
+        if not results["ids"]:
+            print(f"[ingest] move: no chunks found for {req.old_name}")
+            return {"status": "skipped", "detail": "no chunks found for old name"}
+
+        old_ids = results["ids"]
+        old_embeddings = results["embeddings"]
+        old_documents = results["documents"]
+        old_metadatas = results["metadatas"]
+
+        # Build new IDs and updated metadatas
+        # New chunk IDs are based on new_name so they don't collide
+        new_ids = []
+        new_metadatas = []
+        for i, meta in enumerate(old_metadatas):
+            chunk_index = meta.get("chunk_index", i)
+            new_ids.append(_chunk_id(req.new_name, chunk_index))
+            new_metadatas.append(
+                {
+                    **meta,
+                    "file_name": req.new_name,
+                }
+            )
+
+        # Delete old chunks
+        collection.delete(ids=old_ids)
+
+        # Insert under new IDs with updated metadata, same embeddings
+        for i in range(0, len(new_ids), CHROMA_BATCH_SIZE):
+            collection.upsert(
+                ids=new_ids[i : i + CHROMA_BATCH_SIZE],
+                embeddings=old_embeddings[i : i + CHROMA_BATCH_SIZE],
+                documents=old_documents[i : i + CHROMA_BATCH_SIZE],
+                metadatas=new_metadatas[i : i + CHROMA_BATCH_SIZE],
+            )
+
+        print(
+            f"[ingest] ✅ Moved embeddings: {req.old_name} → {req.new_name} ({len(new_ids)} chunks)"
+        )
+        return {"status": "ok", "chunks": len(new_ids)}
+
+    except Exception as e:
+        print(f"[ingest] Error moving embeddings {req.old_name} → {req.new_name}: {e}")
         return {"status": "error", "detail": str(e)}
 
 
