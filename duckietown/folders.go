@@ -10,16 +10,13 @@ import (
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
-// FolderRecord represents a folder in the vault hierarchy.
 type FolderRecord struct {
-	Path     string `json:"path"`     // relative from vault root e.g. "work/invoices"
-	Name     string `json:"name"`     // just the last segment e.g. "invoices"
-	Parent   string `json:"parent"`   // parent path e.g. "work", "" for root-level
-	Children int    `json:"children"` // number of direct subfolders
+	Path     string `json:"path"`
+	Name     string `json:"name"`
+	Parent   string `json:"parent"`
+	Children int    `json:"children"`
 }
 
-// ListFolders returns all folders under the vault as a flat list sorted by path.
-// Exposed to frontend via Wails.
 func (a *App) ListFolders() ([]FolderRecord, error) {
 	if a.vaultPath == "" {
 		return nil, nil
@@ -29,14 +26,10 @@ func (a *App) ListFolders() ([]FolderRecord, error) {
 		if err != nil {
 			return nil
 		}
-		if !d.IsDir() {
+		if !d.IsDir() || path == a.vaultPath {
 			return nil
 		}
-		if path == a.vaultPath {
-			return nil // skip vault root itself
-		}
 		name := d.Name()
-		// Skip hidden dirs
 		if strings.HasPrefix(name, ".") {
 			return filepath.SkipDir
 		}
@@ -57,7 +50,6 @@ func (a *App) ListFolders() ([]FolderRecord, error) {
 		return nil, err
 	}
 
-	// Count direct children for each folder
 	childCount := make(map[string]int)
 	for _, f := range folders {
 		if f.Parent != "" {
@@ -67,20 +59,14 @@ func (a *App) ListFolders() ([]FolderRecord, error) {
 	for i := range folders {
 		folders[i].Children = childCount[folders[i].Path]
 	}
-
-	sort.Slice(folders, func(i, j int) bool {
-		return folders[i].Path < folders[j].Path
-	})
+	sort.Slice(folders, func(i, j int) bool { return folders[i].Path < folders[j].Path })
 	return folders, nil
 }
 
-// CreateFolder creates a new folder at the given relative path under the vault.
-// Exposed to frontend via Wails.
 func (a *App) CreateFolder(relativePath string) error {
 	if a.vaultPath == "" {
 		return fmt.Errorf("no vault path set")
 	}
-	// Sanitise
 	relativePath = filepath.ToSlash(filepath.Clean(relativePath))
 	if relativePath == "." || relativePath == "" {
 		return fmt.Errorf("invalid folder path")
@@ -89,15 +75,11 @@ func (a *App) CreateFolder(relativePath string) error {
 	if err := os.MkdirAll(absPath, 0755); err != nil {
 		return fmt.Errorf("could not create folder: %w", err)
 	}
-	// Add to watcher so new files inside are picked up immediately
-	a.watchDir(absPath)
 	wailsruntime.EventsEmit(a.ctx, "folder-created", relativePath)
 	fmt.Printf("📁 Created folder: %s\n", relativePath)
 	return nil
 }
 
-// DeleteFolder deletes a folder and all its contents locally and from Supabase.
-// Exposed to frontend via Wails.
 func (a *App) DeleteFolder(relativePath string) error {
 	if a.vaultPath == "" {
 		return fmt.Errorf("no vault path set")
@@ -105,7 +87,7 @@ func (a *App) DeleteFolder(relativePath string) error {
 	relativePath = filepath.ToSlash(filepath.Clean(relativePath))
 	absPath := filepath.Join(a.vaultPath, filepath.FromSlash(relativePath))
 
-	// Collect all files inside before deletion so we can clean Supabase
+	// Collect all files before deletion
 	var filePaths []struct{ abs, name, folder string }
 	filepath.WalkDir(absPath, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -125,16 +107,15 @@ func (a *App) DeleteFolder(relativePath string) error {
 		return nil
 	})
 
-	// Delete local folder tree
 	if err := os.RemoveAll(absPath); err != nil {
 		return fmt.Errorf("could not delete folder: %w", err)
 	}
 
-	// Clean up Supabase and ChromaDB for each file
+	// Clean Supabase and ChromaDB for each file
 	for _, f := range filePaths {
 		a.supaDeleteStorageFile(f.name, f.folder)
 		a.supaDeleteFileRecord(f.name)
-		go a.DeleteFileEmbeddings(f.name)
+		go a.DeleteFileEmbeddings(f.name) // always clean up embeddings
 	}
 
 	wailsruntime.EventsEmit(a.ctx, "folder-deleted", relativePath)
@@ -142,24 +123,19 @@ func (a *App) DeleteFolder(relativePath string) error {
 	return nil
 }
 
-// MoveFileToFolder moves a file from its current location to a new folder path.
-// Updates local filesystem, Supabase storage + DB, and ChromaDB metadata.
-// Exposed to frontend via Wails.
 func (a *App) MoveFileToFolder(fileName, targetFolderPath string) error {
 	if a.vaultPath == "" {
 		return fmt.Errorf("no vault path set")
 	}
 
-	// Find current file location by scanning vault
 	currentPath, currentFolder, err := a.findFileInVault(fileName)
 	if err != nil {
 		return fmt.Errorf("file not found in vault: %w", err)
 	}
 	if currentFolder == targetFolderPath {
-		return nil // already there
+		return nil
 	}
 
-	// Build destination path
 	var destDir string
 	if targetFolderPath == "" {
 		destDir = a.vaultPath
@@ -171,29 +147,33 @@ func (a *App) MoveFileToFolder(fileName, targetFolderPath string) error {
 	}
 	destPath := filepath.Join(destDir, fileName)
 
-	// Move locally
+	// Mark as moved BEFORE the filesystem rename so the watcher's Create
+	// event suppresses re-ingest when it fires
+	markMoved(fileName)
+
 	if err := os.Rename(currentPath, destPath); err != nil {
 		return fmt.Errorf("could not move file: %w", err)
 	}
 
-	// Update Supabase storage — upload to new path, delete old
 	newSP := a.storagePath(fileName, targetFolderPath)
-	a.supaUploadFile(destPath, fileName, targetFolderPath)
-	a.supaDeleteStorageFile(fileName, currentFolder)
-	a.supaUpdateFileFolderPath(fileName, targetFolderPath, newSP)
-
-	// Update ChromaDB metadata only — no re-embedding
-	go a.MoveFileEmbeddings(fileName, fileName)
+	go func() {
+		a.supaUploadFile(destPath, fileName, targetFolderPath)
+		a.supaDeleteStorageFile(fileName, currentFolder)
+		a.supaUpdateFileFolderPath(fileName, targetFolderPath, newSP)
+		// Update ChromaDB metadata only — NO re-embedding
+		a.MoveFileEmbeddings(fileName, fileName)
+	}()
 
 	wailsruntime.EventsEmit(a.ctx, "file-moved", map[string]string{
 		"file_name":   fileName,
 		"from_folder": currentFolder,
 		"to_folder":   targetFolderPath,
 	})
+	// Emit file-uploaded to dismiss any lingering syncing toast
+	wailsruntime.EventsEmit(a.ctx, "file-uploaded", fileName)
 	return nil
 }
 
-// findFileInVault searches the vault for a file by name and returns its abs path and folder path.
 func (a *App) findFileInVault(fileName string) (absPath, folderPath string, err error) {
 	err = filepath.WalkDir(a.vaultPath, func(p string, d os.DirEntry, e error) error {
 		if e != nil || d.IsDir() {
@@ -217,7 +197,6 @@ func (a *App) findFileInVault(fileName string) (absPath, folderPath string, err 
 	return
 }
 
-// folderPathForFile returns the folder_path for a given absolute file path.
 func (a *App) folderPathForFile(absFilePath string) string {
 	dir := filepath.Dir(absFilePath)
 	rel, err := filepath.Rel(a.vaultPath, dir)

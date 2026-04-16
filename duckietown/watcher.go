@@ -5,11 +5,42 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
+
+// recentlyMoved tracks files that were moved/renamed within the vault.
+// When we see a Create event for one of these, we suppress re-ingest
+// because the embeddings were already updated via MoveFileEmbeddings.
+var recentlyMoved = struct {
+	sync.Mutex
+	names map[string]time.Time
+}{names: make(map[string]time.Time)}
+
+func markMoved(name string) {
+	recentlyMoved.Lock()
+	recentlyMoved.names[name] = time.Now()
+	recentlyMoved.Unlock()
+}
+
+func wasMoved(name string) bool {
+	recentlyMoved.Lock()
+	defer recentlyMoved.Unlock()
+	t, ok := recentlyMoved.names[name]
+	if !ok {
+		return false
+	}
+	// Consider "recently moved" if within last 3 seconds
+	if time.Since(t) > 3*time.Second {
+		delete(recentlyMoved.names, name)
+		return false
+	}
+	delete(recentlyMoved.names, name) // consume it — one-shot
+	return true
+}
 
 func (a *App) startWatcher() {
 	a.mu.Lock()
@@ -28,7 +59,6 @@ func (a *App) startWatcher() {
 		return
 	}
 
-	// Watch vault root and all existing subdirectories recursively
 	filepath.WalkDir(a.vaultPath, func(path string, d os.DirEntry, err error) error {
 		if err != nil || !d.IsDir() {
 			return nil
@@ -62,14 +92,6 @@ func (a *App) startWatcher() {
 	}(a.watcherStop)
 }
 
-// watchDir adds a single directory to the active watcher (called on folder create).
-func (a *App) watchDir(absPath string) {
-	// The watcher is stored in the goroutine — we trigger it by creating the dir,
-	// which fires a Create event that we catch below and add to watcher.
-	// So no explicit handle needed here; the Create event handler does it.
-	_ = absPath
-}
-
 func shouldSkipFile(name string) bool {
 	if strings.HasPrefix(name, ".") {
 		return true
@@ -90,27 +112,19 @@ func (a *App) handleFSEvent(event fsnotify.Event, watcher *fsnotify.Watcher) {
 	name := filepath.Base(event.Name)
 	folderPath := a.folderPathForFile(event.Name)
 
-	// If it's a directory event
+	// Directory events
 	info, statErr := os.Stat(event.Name)
 	isDir := statErr == nil && info.IsDir()
 
 	if isDir {
 		switch {
 		case event.Has(fsnotify.Create):
-			// New directory — add to watcher and notify frontend
 			watcher.Add(event.Name)
 			rel, _ := filepath.Rel(a.vaultPath, event.Name)
-			rel = filepath.ToSlash(rel)
-			wailsruntime.EventsEmit(a.ctx, "folder-created", rel)
-		case event.Has(fsnotify.Remove):
+			wailsruntime.EventsEmit(a.ctx, "folder-created", filepath.ToSlash(rel))
+		case event.Has(fsnotify.Remove), event.Has(fsnotify.Rename):
 			rel, _ := filepath.Rel(a.vaultPath, event.Name)
-			rel = filepath.ToSlash(rel)
-			wailsruntime.EventsEmit(a.ctx, "folder-deleted", rel)
-		case event.Has(fsnotify.Rename):
-			// Rename of dir — treated as delete; the new name fires Create
-			rel, _ := filepath.Rel(a.vaultPath, event.Name)
-			rel = filepath.ToSlash(rel)
-			wailsruntime.EventsEmit(a.ctx, "folder-deleted", rel)
+			wailsruntime.EventsEmit(a.ctx, "folder-deleted", filepath.ToSlash(rel))
 		}
 		return
 	}
@@ -121,6 +135,19 @@ func (a *App) handleFSEvent(event fsnotify.Event, watcher *fsnotify.Watcher) {
 
 	switch {
 	case event.Has(fsnotify.Create), event.Has(fsnotify.Write):
+		// If this file was just moved/renamed within the vault, suppress re-ingest.
+		// The embeddings were already updated by MoveFileEmbeddings/RenameFile.
+		if wasMoved(name) {
+			// Still update Supabase storage path but DON'T re-ingest
+			time.Sleep(200 * time.Millisecond)
+			go func() {
+				a.supaUploadFile(event.Name, name, folderPath)
+				// Emit file-uploaded so the UI refreshes without the stuck syncing toast
+				wailsruntime.EventsEmit(a.ctx, "file-uploaded", name)
+			}()
+			return
+		}
+
 		wailsruntime.EventsEmit(a.ctx, "file-changed", map[string]string{
 			"event_type": "created",
 			"file_name":  name,
@@ -133,51 +160,63 @@ func (a *App) handleFSEvent(event fsnotify.Event, watcher *fsnotify.Watcher) {
 				wailsruntime.EventsEmit(a.ctx, "upload-error", map[string]string{
 					"file": name, "error": err.Error(),
 				})
+				// Dismiss syncing toast even on error
+				wailsruntime.EventsEmit(a.ctx, "file-uploaded", name)
 			} else {
 				wailsruntime.EventsEmit(a.ctx, "file-uploaded", name)
+				// Only ingest genuinely new files
 				queueIngest(event.Name, name)
 			}
 		}()
 
 	case event.Has(fsnotify.Rename):
-		// fsnotify Rename fires on the OLD path when a file is moved/renamed.
-		// The new path fires a Create event. We handle the delete side here.
-		// If the file moved within the vault, the Create will re-upload under new path.
-		wailsruntime.EventsEmit(a.ctx, "file-changed", map[string]string{
-			"event_type": "deleted",
-			"file_name":  name,
-		})
-		// Give a short window for the Create event to arrive (same-vault move)
-		time.Sleep(100 * time.Millisecond)
-		// Check if file still exists somewhere in vault (move vs true delete)
+		// Rename fires on OLD path. Give OS time to settle.
+		time.Sleep(150 * time.Millisecond)
+
 		newPath, newFolder, err := a.findFileInVault(name)
 		if err == nil && newPath != "" {
-			// File was moved within vault — update Supabase folder_path only
+			// File moved within vault — update metadata, no re-ingest
+			markMoved(name) // suppress the upcoming Create event from triggering ingest
 			newSP := a.storagePath(name, newFolder)
-			a.supaDeleteStorageFile(name, folderPath)
-			a.supaUploadFile(newPath, name, newFolder)
-			a.supaUpdateFileFolderPath(name, newFolder, newSP)
-			// Update ChromaDB metadata — no re-embed
-			go a.MoveFileEmbeddings(name, name)
-			wailsruntime.EventsEmit(a.ctx, "file-moved", map[string]string{
-				"file_name":   name,
-				"from_folder": folderPath,
-				"to_folder":   newFolder,
-			})
+			go func() {
+				a.supaDeleteStorageFile(name, folderPath)
+				a.supaUploadFile(newPath, name, newFolder)
+				a.supaUpdateFileFolderPath(name, newFolder, newSP)
+				// Update ChromaDB metadata in-place — zero re-embedding
+				a.MoveFileEmbeddings(name, name)
+				wailsruntime.EventsEmit(a.ctx, "file-moved", map[string]string{
+					"file_name":   name,
+					"from_folder": folderPath,
+					"to_folder":   newFolder,
+				})
+				// Dismiss any syncing toast
+				wailsruntime.EventsEmit(a.ctx, "file-uploaded", name)
+			}()
 		} else {
-			// File truly deleted
-			a.supaDeleteStorageFile(name, folderPath)
-			a.supaDeleteFileRecord(name)
-			go a.DeleteFileEmbeddings(name)
+			// File truly deleted from vault
+			go func() {
+				a.supaDeleteStorageFile(name, folderPath)
+				a.supaDeleteFileRecord(name)
+				a.DeleteFileEmbeddings(name) // ← always clean up embeddings on delete
+			}()
+			wailsruntime.EventsEmit(a.ctx, "file-changed", map[string]string{
+				"event_type": "deleted",
+				"file_name":  name,
+			})
+			wailsruntime.EventsEmit(a.ctx, "file-uploaded", name) // dismiss toast
 		}
 
 	case event.Has(fsnotify.Remove):
+		go func() {
+			a.supaDeleteStorageFile(name, folderPath)
+			a.supaDeleteFileRecord(name)
+			a.DeleteFileEmbeddings(name) // ← clean up embeddings
+		}()
 		wailsruntime.EventsEmit(a.ctx, "file-changed", map[string]string{
 			"event_type": "deleted",
 			"file_name":  name,
 		})
-		a.supaDeleteStorageFile(name, folderPath)
-		a.supaDeleteFileRecord(name)
-		go a.DeleteFileEmbeddings(name)
+		// Dismiss syncing toast immediately on delete
+		wailsruntime.EventsEmit(a.ctx, "file-uploaded", name)
 	}
 }

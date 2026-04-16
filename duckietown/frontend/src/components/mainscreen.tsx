@@ -4,7 +4,7 @@ import { Sidebar } from "./sidebar";
 import { FileArea } from "./filearea";
 import { SearchBar } from "./searchbar";
 import { AIPanel } from "./aipanel";
-import { Breadcrumb } from "./breadcrumbs";
+import { Topbar } from "./topbar";
 import { wails } from "../lib/wails";
 import { toast } from "sonner";
 import type {
@@ -55,15 +55,14 @@ export function MainScreen({
   const [searchOpen, setSearchOpen] = useState(false);
   const [aiResults, setAiResults] = useState<SearchResult[]>([]);
 
-  // Folder state
   const [currentFolder, setCurrentFolder] = useState<string>("");
   const [folders, setFolders] = useState<FolderRecord[]>([]);
 
-  // AI panel
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
   const [aiTargetFile, setAiTargetFile] = useState<string | null>(null);
   const [aiSessionKey, setAiSessionKey] = useState(0);
 
+  // loadFolders — plain async function, called from event handlers and imperative code
   const loadFolders = useCallback(async () => {
     try {
       const result = await wails.listFolders();
@@ -73,38 +72,61 @@ export function MainScreen({
     }
   }, []);
 
+  // Initial load — runs once, async inside effect body is fine with cancelled guard
   useEffect(() => {
-    loadFolders();
-  }, [loadFolders]);
+    let cancelled = false;
+    wails
+      .listFolders()
+      .then((result) => {
+        if (!cancelled) setFolders((result as unknown as FolderRecord[]) ?? []);
+      })
+      .catch(console.error);
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Listen for folder/file events that require folder refresh
+  // Wails events — setState called inside callbacks, not directly in effect body
   useEffect(() => {
-    wails.on("folder-created", () => {
-      loadFolders();
+    const refresh = () => {
+      void loadFolders();
       onRefresh();
-    });
-    wails.on("folder-deleted", () => {
-      loadFolders();
-      onRefresh();
-    });
+    };
+    wails.on("folder-created", refresh);
+    wails.on("folder-deleted", refresh);
     wails.on("file-moved", () => {
       onRefresh();
+    });
+    wails.on("organise-complete", (result: unknown) => {
+      const r = result as {
+        folder_name: string;
+        files: string[];
+        created: boolean;
+      };
+      if (r.created) {
+        toast.success(`Organised ${r.files?.length ?? 0} files`, {
+          description: `Created folder "${r.folder_name}"`,
+        });
+        void loadFolders();
+        onRefresh();
+      }
     });
     return () => {
       wails.off("folder-created");
       wails.off("folder-deleted");
       wails.off("file-moved");
+      wails.off("organise-complete");
     };
   }, [loadFolders, onRefresh]);
 
-  // Files visible in current folder (exact match — not recursive)
+  // Files in current folder only
   const folderFiles =
     currentFolder === ""
-      ? files // root shows all files with no folder_path
-          .filter((f) => f.folder_path === "" || f.folder_path === null)
+      ? files.filter((f) => !f.folder_path || f.folder_path === "")
       : files.filter((f) => f.folder_path === currentFolder);
 
-  // Apply type filter on top of folder filter
+  // Apply type filter
   const typeFiltered = folderFiles.filter((f) => {
     return (
       selectedType === "all" ||
@@ -129,7 +151,7 @@ export function MainScreen({
     );
   });
 
-  // AI results override order when active (search across all files, not just current folder)
+  // AI results override order when active
   const displayFiles =
     aiResults.length > 0
       ? (aiResults
@@ -137,7 +159,7 @@ export function MainScreen({
           .filter(Boolean) as FileRecord[])
       : typeFiltered;
 
-  // ── Folder handlers ──────────────────────────────────────────────────────────
+  // ── Folder handlers ──────────────────────────────────
 
   const handleCreateFolder = async (parentPath: string, name: string) => {
     const fullPath = parentPath ? `${parentPath}/${name}` : name;
@@ -153,7 +175,7 @@ export function MainScreen({
   const handleDeleteFolder = async (path: string) => {
     try {
       await wails.deleteFolder(path);
-      toast.info(`Folder deleted`);
+      toast.info("Folder deleted");
       if (currentFolder === path || currentFolder.startsWith(path + "/")) {
         setCurrentFolder("");
       }
@@ -179,7 +201,7 @@ export function MainScreen({
     }
   };
 
-  // ── AI handlers ──────────────────────────────────────────────────────────────
+  // ── AI panel handlers ────────────────────────────────
 
   const openAiPanel = (targetFile: string | null) => {
     setAiTargetFile(targetFile);
@@ -192,25 +214,12 @@ export function MainScreen({
     setAiTargetFile(null);
   };
 
-  // ── Organise handler — triggered from AIPanel ────────────────────────────────
-  // AIPanel can emit "organise" events with {query, folderName}
-  useEffect(() => {
-    wails.on("organise-complete", (result: unknown) => {
-      const r = result as {
-        folder_name: string;
-        files: string[];
-        created: boolean;
-      };
-      if (r.created) {
-        toast.success(`Organised ${r.files.length} files`, {
-          description: `Created folder "${r.folder_name}"`,
-        });
-        loadFolders();
-        onRefresh();
-      }
-    });
-    return () => wails.off("organise-complete");
-  }, [loadFolders, onRefresh]);
+  const navigateFolder = (path: string) => {
+    setCurrentFolder(path);
+    setAiResults([]);
+    setSearchQuery("");
+    setSelectedType("all");
+  };
 
   return (
     <div className="flex h-screen overflow-hidden bg-[#1e1e1e] text-[#d4d4d4]">
@@ -220,11 +229,7 @@ export function MainScreen({
         currentFolder={currentFolder}
         selectedType={selectedType}
         onSelectType={setSelectedType}
-        onSelectFolder={(path) => {
-          setCurrentFolder(path);
-          setAiResults([]);
-          setSearchQuery("");
-        }}
+        onSelectFolder={navigateFolder}
         onCreateFolder={handleCreateFolder}
         onDeleteFolder={handleDeleteFolder}
         onDropFileToFolder={handleDropFileToFolder}
@@ -236,7 +241,7 @@ export function MainScreen({
         onOpenVault={onOpenVault}
         onRefresh={() => {
           onRefresh();
-          loadFolders();
+          void loadFolders();
         }}
         onSignOut={onSignOut}
         userEmail={user?.email ?? ""}
@@ -244,33 +249,15 @@ export function MainScreen({
 
       <div className="flex flex-1 overflow-hidden min-w-0">
         <div className="flex flex-col flex-1 overflow-hidden min-w-0">
-          {/* Breadcrumb */}
-          <Breadcrumb
+          {/* Combined topbar: breadcrumb + ingest status + Ask AI */}
+          <Topbar
             currentFolder={currentFolder}
-            onNavigate={(path) => {
-              setCurrentFolder(path);
-              setAiResults([]);
-              setSearchQuery("");
-            }}
+            onNavigate={navigateFolder}
+            onAskAi={() => openAiPanel(null)}
+            aiPanelOpen={aiPanelOpen}
           />
 
-          {/* Top bar */}
-          <div className="flex items-center justify-end px-4 py-2 border-b border-[#3e3e42] bg-[#1e1e1e] shrink-0">
-            <button
-              onClick={() => openAiPanel(null)}
-              className={`flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-md border transition-colors
-                ${
-                  aiPanelOpen
-                    ? "border-indigo-500/50 text-indigo-400 bg-indigo-500/10"
-                    : "border-[#3e3e42] text-[#6a6a6a] hover:text-[#d4d4d4] hover:border-[#505050]"
-                }`}
-            >
-              <Sparkles size={12} />
-              Ask AI
-            </button>
-          </div>
-
-          {/* AI results banner */}
+          {/* AI search results banner */}
           {aiResults.length > 0 && (
             <div className="flex items-center gap-2 px-4 py-1.5 bg-indigo-500/10 border-b border-indigo-500/20 shrink-0">
               <Sparkles size={11} className="text-indigo-400" />
@@ -296,14 +283,14 @@ export function MainScreen({
             searchQuery=""
             aiResults={aiResults}
             currentFolder={currentFolder}
+            folders={folders}
             onDelete={onDelete}
             onRename={onRename}
             onOpen={onOpen}
             onGetPreview={onGetPreview}
-            onAskAi={(fileName) => openAiPanel(fileName)}
+            onAskAi={openAiPanel}
             onMoveToFolder={handleDropFileToFolder}
-            onNavigateFolder={setCurrentFolder}
-            folders={folders}
+            onNavigateFolder={navigateFolder}
           />
 
           <SearchBar
