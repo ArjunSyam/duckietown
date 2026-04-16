@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -30,28 +28,18 @@ func (a *App) SetVaultPath(path string) error {
 	a.vaultPath = path
 	saveConfig(a.userID, Config{VaultPath: path})
 
-	// Start sidecar and ingest worker before watcher
+	// Start sidecar + ingest worker before watcher so ingest is ready
 	if err := a.startSidecar(); err != nil {
 		fmt.Printf("⚠️ Sidecar start failed: %v\n", err)
 	}
 	a.startIngestWorker()
 	a.startWatcher()
 
-	// Upload any existing files in the root folder
+	// fullSync handles both upload to Supabase AND queuing ingest into ChromaDB
+	// for all existing files in the vault, including subdirectories
 	go func() {
-		entries, err := os.ReadDir(path)
-		if err != nil {
-			return
-		}
-		for _, entry := range entries {
-			if entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
-				continue
-			}
-			fullPath := filepath.Join(path, entry.Name())
-			// Root-level files have empty folder path
-			a.supaUploadFile(fullPath, entry.Name(), "")
-		}
-		wailsruntime.EventsEmit(a.ctx, "file-uploaded", "initial-scan")
+		a.fullSync()
+		wailsruntime.EventsEmit(a.ctx, "watcher-ready", true)
 	}()
 
 	return nil

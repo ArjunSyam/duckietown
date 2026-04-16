@@ -34,7 +34,9 @@ export function OpenFile(arg1:string):Promise<void>;
 
 export function OpenVaultFolder():Promise<void>;
 
-export function OrganiseFolder(arg1:string,arg2:string,arg3:string):Promise<main.OrganiseFolderResult>;
+export function OrganiseFolder(arg1:string,arg2:string,arg3:string,arg4:string):Promise<main.OrganiseFolderResult>;
+
+export function ParseOrganiseIntent(arg1:string):Promise<main.OrganiseIntent>;
 
 export function RenameFile(arg1:string,arg2:string):Promise<void>;
 

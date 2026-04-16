@@ -38,23 +38,6 @@ interface Props {
   currentFolder: string;
 }
 
-// Detect organise intent: "organise/organize/move all X into a folder called Y"
-function parseOrganiseIntent(
-  message: string,
-): { query: string; folderName: string } | null {
-  const patterns = [
-    /(?:organis[e|ze]|move|group|put)\s+(?:all\s+)?(.+?)\s+(?:into|in|to)\s+(?:a\s+)?(?:folder\s+)?(?:called|named)?\s+"?([^"]+)"?/i,
-    /create\s+(?:a\s+)?(?:folder\s+)?(?:called|named)\s+"?([^"]+)"?\s+(?:and\s+)?(?:move|add|put)\s+(?:all\s+)?(.+)/i,
-  ];
-  for (const pattern of patterns) {
-    const match = message.match(pattern);
-    if (match) {
-      return { query: match[1].trim(), folderName: match[2].trim() };
-    }
-  }
-  return null;
-}
-
 export function AIPanel({
   open,
   onClose,
@@ -66,26 +49,29 @@ export function AIPanel({
   const [input, setInput] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
   const [isOrganising, setIsOrganising] = useState(false);
+  const [isParsingIntent, setIsParsingIntent] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
+  // Fresh state on every open
   useEffect(() => {
     const welcome: Message = {
       id: "welcome",
       role: "assistant",
       content: targetFile
-        ? `I'll help you with **${targetFile}**. Ask me to summarise it or ask any question about its content.\n\nYou can also ask me to organise files, e.g. _"move all cat photos into a folder called cats"_`
-        : `Ask me anything about your files, or ask me to organise them.\n\nExamples:\n• _"Summarise the Q3 report"_\n• _"Move all invoices into a folder called invoices"_\n• _"What files mention machine learning?"_`,
+        ? `I'll help you with **${targetFile}**. Ask me to summarise it or ask any question about its content.\n\nYou can also ask me to organise files — for example:\n• _"Group all image files into a folder called photos"_\n• _"Move all legal documents into a folder named legal"_`
+        : `Ask me anything about your files, or ask me to organise them.\n\nExamples:\n• _"What does the Q3 report say about revenue?"_\n• _"Summarise sample.pdf"_\n• _"Group all images into a folder called photos"_\n• _"Move all legal documents into legal"_`,
     };
     setMessages([welcome]);
     setInput("");
     setIsStreaming(false);
     setIsOrganising(false);
+    setIsParsingIntent(false);
     setTimeout(() => inputRef.current?.focus(), 100);
 
     if (targetFile) {
       setTimeout(() => {
-        triggerSend(`Summarise ${targetFile}`, [], targetFile);
+        triggerChat(`Summarise ${targetFile}`, [], targetFile);
       }, 400);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -95,6 +81,7 @@ export function AIPanel({
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Wire Wails streaming events
   useEffect(() => {
     wails.on("chat-token", (data: { content: string }) => {
       setMessages((prev) => {
@@ -131,7 +118,11 @@ export function AIPanel({
       setIsStreaming(false);
       setMessages((prev) => [
         ...prev,
-        { id: Date.now().toString(), role: "assistant", content: `⚠️ ${err}` },
+        {
+          id: Date.now().toString(),
+          role: "assistant",
+          content: `⚠️ ${err}`,
+        },
       ]);
     });
     return () => {
@@ -142,7 +133,7 @@ export function AIPanel({
     };
   }, [sessionKey]);
 
-  const triggerSend = (
+  const triggerChat = (
     text: string,
     currentMessages: Message[],
     fileContext?: string,
@@ -161,7 +152,6 @@ export function AIPanel({
       content: "",
       streaming: true,
     };
-
     setMessages((prev) => [...prev, userMsg, assistantMsg]);
     setIsStreaming(true);
 
@@ -172,17 +162,22 @@ export function AIPanel({
     wails.chatWithAgent(q, history, fileContext ?? targetFile ?? "");
   };
 
-  const triggerOrganise = async (query: string, folderName: string) => {
+  const triggerOrganise = async (
+    query: string,
+    folderName: string,
+    typeFilter: string,
+  ) => {
     setIsOrganising(true);
+
     const userMsg: Message = {
       id: Date.now().toString(),
       role: "user",
-      content: `Organise files matching "${query}" into folder "${folderName}"`,
+      content: `Organise files matching "${query}" into a folder called "${folderName}"`,
     };
     const pendingMsg: Message = {
       id: (Date.now() + 1).toString(),
       role: "assistant",
-      content: `⏳ Finding files related to "${query}" and creating folder "${folderName}"…`,
+      content: `⏳ Searching for files${typeFilter ? ` (${typeFilter} files)` : ""} matching "${query}" and creating folder "${folderName}"…`,
       isOrganise: true,
     };
     setMessages((prev) => [...prev, userMsg, pendingMsg]);
@@ -192,14 +187,17 @@ export function AIPanel({
         currentFolder,
         query,
         folderName,
+        typeFilter ?? "",
       );
       const doneMsg: Message = {
         id: Date.now().toString(),
         role: "assistant",
+        isOrganise: true,
         content: result.error
           ? `⚠️ ${result.error}`
-          : `✅ Created folder **"${result.folder_name}"** and moved ${result.files.length} file${result.files.length !== 1 ? "s" : ""} into it:\n${result.files.map((f) => `• ${f}`).join("\n")}`,
-        isOrganise: true,
+          : result.files && result.files.length > 0
+            ? `✅ Created folder **"${result.folder_name}"** and moved ${result.files.length} file${result.files.length !== 1 ? "s" : ""}:\n${result.files.map((f: string) => `• ${f}`).join("\n")}`
+            : `✅ Created folder **"${result.folder_name}"** but no matching files were found to move.`,
       };
       setMessages((prev) => [...prev.slice(0, -1), doneMsg]);
     } catch (e) {
@@ -216,23 +214,44 @@ export function AIPanel({
     }
   };
 
-  const handleSend = () => {
+  const handleSend = async () => {
     const q = input.trim();
-    if (!q || isStreaming || isOrganising) return;
+    if (!q || isStreaming || isOrganising || isParsingIntent) return;
+    setInput("");
 
-    // Check for organise intent first
-    const organiseIntent = parseOrganiseIntent(q);
-    if (organiseIntent) {
-      setInput("");
-      triggerOrganise(organiseIntent.query, organiseIntent.folderName);
-      return;
+    // Ask Gemma to parse intent — is this an organise request?
+    setIsParsingIntent(true);
+    try {
+      const intent = await wails.parseOrganiseIntent(q);
+      setIsParsingIntent(false);
+
+      if (intent.is_organise && intent.folder_name) {
+        await triggerOrganise(
+          intent.query ?? q,
+          intent.folder_name,
+          intent.type_filter ?? "",
+        );
+        return;
+      }
+    } catch {
+      setIsParsingIntent(false);
+      // Intent parse failed — fall through to chat
     }
 
-    triggerSend(q, messages);
-    setInput("");
+    // Regular chat
+    triggerChat(q, messages);
   };
 
   if (!open) return null;
+
+  const busy = isStreaming || isOrganising || isParsingIntent;
+
+  const placeholderText = () => {
+    if (isOrganising) return "Organising files…";
+    if (isParsingIntent) return "Understanding request…";
+    if (targetFile) return `Ask about ${targetFile}…`;
+    return "Ask about files, or say 'group all images into photos'…";
+  };
 
   return (
     <div
@@ -276,6 +295,13 @@ export function AIPanel({
             {messages.map((msg) => (
               <MessageBubble key={msg.id} message={msg} />
             ))}
+            {/* Intent parsing indicator */}
+            {isParsingIntent && (
+              <div className="flex gap-2 items-center text-[11px] text-[#4a4a4a]">
+                <Loader2 size={11} className="animate-spin text-indigo-400" />
+                Understanding your request…
+              </div>
+            )}
             <div ref={bottomRef} />
           </div>
         </ScrollArea>
@@ -302,14 +328,8 @@ export function AIPanel({
                 handleSend();
               }
             }}
-            placeholder={
-              isOrganising
-                ? "Organising…"
-                : targetFile
-                  ? `Ask about ${targetFile}…`
-                  : "Ask about files, or say 'move X into folder Y'…"
-            }
-            disabled={isStreaming || isOrganising}
+            placeholder={placeholderText()}
+            disabled={busy}
             className="flex-1 bg-transparent border-none outline-none text-sm text-[#d4d4d4] placeholder:text-[#3a3a3a] disabled:opacity-50"
           />
           <Button
@@ -317,9 +337,9 @@ export function AIPanel({
             size="icon"
             className="w-7 h-7 shrink-0"
             onClick={handleSend}
-            disabled={!input.trim() || isStreaming || isOrganising}
+            disabled={!input.trim() || busy}
           >
-            {isStreaming || isOrganising ? (
+            {busy ? (
               <Loader2 size={13} className="animate-spin text-indigo-400" />
             ) : (
               <Send size={13} />
@@ -334,6 +354,8 @@ export function AIPanel({
   );
 }
 
+// ── Message bubble ─────────────────────────────────────────────────────────────
+
 function MessageBubble({ message }: { message: Message }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const isUser = message.role === "user";
@@ -342,7 +364,13 @@ function MessageBubble({ message }: { message: Message }) {
     <div className={`flex gap-2 ${isUser ? "flex-row-reverse" : "flex-row"}`}>
       <div
         className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5
-        ${isUser ? "bg-indigo-500/20" : message.isOrganise ? "bg-emerald-500/20 border border-emerald-500/30" : "bg-[#2d2d30] border border-[#3e3e42]"}`}
+          ${
+            isUser
+              ? "bg-indigo-500/20"
+              : message.isOrganise
+                ? "bg-emerald-500/20 border border-emerald-500/30"
+                : "bg-[#2d2d30] border border-[#3e3e42]"
+          }`}
       >
         {isUser ? (
           <User size={11} className="text-indigo-400" />
@@ -358,13 +386,13 @@ function MessageBubble({ message }: { message: Message }) {
       >
         <div
           className={`rounded-xl px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap break-words
-          ${
-            isUser
-              ? "bg-indigo-500/20 text-[#d4d4d4] border border-indigo-500/20"
-              : message.isOrganise
-                ? "bg-emerald-500/10 text-[#d4d4d4] border border-emerald-500/20"
-                : "bg-[#252526] text-[#d4d4d4] border border-[#3e3e42]"
-          }`}
+            ${
+              isUser
+                ? "bg-indigo-500/20 text-[#d4d4d4] border border-indigo-500/20"
+                : message.isOrganise
+                  ? "bg-emerald-500/10 text-[#d4d4d4] border border-emerald-500/20"
+                  : "bg-[#252526] text-[#d4d4d4] border border-[#3e3e42]"
+            }`}
         >
           {message.content || (
             <span className="flex gap-1 items-center">
