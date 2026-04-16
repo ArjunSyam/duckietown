@@ -131,31 +131,55 @@ type App struct {
 
 #### `files.go` - File Operations & Ingest Queue
 ```go
-var ingestQueue = make(chan ingestJob, 64)
+var ingestQueue = make(chan ingestJob, 256)
+var ingestPending atomic.Int32 // count of jobs waiting or in progress
 
 type ingestJob struct {
     filePath string
     fileName string
 }
+
+type FileRecord struct {
+    ID          string `json:"id"`
+    Name        string `json:"name"`
+    Size        int64  `json:"size"`
+    MimeType    string `json:"mime_type"`
+    FolderPath  string `json:"folder_path"`
+    CreatedAt   string `json:"created_at"`
+    UpdatedAt   string `json:"updated_at"`
+    StoragePath string `json:"storage_path"`
+}
 ```
 
 **Responsibilities**:
 - File CRUD operations (List, Delete, Rename, Open)
-- Ingest queue management (serialized processing)
+- Enhanced ingest queue management with atomic counter
+- Progress tracking via Wails events
 - Full synchronization between local, Supabase, and ChromaDB
 - File upload to Supabase Storage
 - Metadata management in Supabase PostgreSQL
 
 **Key Functions**:
-- `startIngestWorker()`: Serializes file ingestion to respect rate limits
-- `queueIngest()`: Adds files to ingest queue with backpressure handling
-- `fullSync()`: Three-way sync between local filesystem, Supabase, and ChromaDB
+- `startIngestWorker()`: Serializes file ingestion with progress events
+- `queueIngest()`: Adds files to ingest queue with backpressure (256 capacity)
+- `fullSync()`: Three-way sync with ingest count notification
 - `DeleteFile()`: Cascading delete (local + storage + database + embeddings)
 - `RenameFile()`: Updates metadata without re-embedding
+
+**Ingest Queue Events**:
+- `ingest-start`: Emitted when file processing begins
+- `ingest-error`: Emitted on ingest failure
+- `ingest-progress`: Emitted after each file with remaining count
+- `ingest-done`: Emitted when queue is fully drained
+- `ingest-queued`: Emitted during fullSync with total files to process
 
 #### `ingest.go` - Sidecar Communication
 ```go
 const sidecarBase = "http://127.0.0.1:8000"
+
+func httpClientTimeout() time.Duration {
+    return 120 * time.Second
+}
 ```
 
 **Responsibilities**:
@@ -167,8 +191,8 @@ const sidecarBase = "http://127.0.0.1:8000"
 **Key Functions**:
 - `IngestFile()`: Sends file to sidecar for embedding
 - `GetIndexedFiles()`: Retrieves list of files in ChromaDB
-- `MoveFileEmbeddings()`: Updates metadata on rename/move (no re-embed)
-- `DeleteFileEmbeddings()`: Removes embeddings from ChromaDB
+- `MoveFileEmbeddings()`: Updates metadata on rename/move using HTTP PATCH (no re-embed)
+- `DeleteFileEmbeddings()`: Removes embeddings from ChromaDB using HTTP DELETE
 
 #### `agent.go` - AI Search & Chat
 ```go
@@ -179,18 +203,37 @@ type SearchResult struct {
     Modality   string  `json:"modality"`
     Page       string  `json:"page"`
 }
+
+type queryRequest struct {
+    Query      string `json:"query"`
+    UserID     string `json:"user_id"`
+    TopK       int    `json:"top_k"`
+    TypeFilter string `json:"type_filter,omitempty"`
+}
+
+type OrganiseIntent struct {
+    IsOrganise bool   `json:"is_organise"`
+    Query      string `json:"query"`
+    FolderName string `json:"folder_name"`
+    TypeFilter string `json:"type_filter"`
+    Error      string `json:"error,omitempty"`
+}
 ```
 
 **Responsibilities**:
 - Semantic search via sidecar
 - Streaming RAG chat implementation
-- AI-powered file organization
+- AI-powered file organization with intent parsing
+- Type-based file filtering
 - Wails event emission for streaming responses
 
 **Key Functions**:
 - `SemanticSearch()`: Query embeddings with top-K retrieval
-- `ChatWithAgent()`: Streaming chat with context retrieval
-- `OrganiseFolder()`: AI-driven file organization using semantic search
+- `semanticSearchWithTypeFilter()`: Explicit type filtering for organization
+- `ParseOrganiseIntent()`: AI-powered command understanding using Gemma
+- `ChatWithAgent()`: Streaming chat with smart context retrieval
+- `OrganiseFolder()`: Enhanced file organization with type filtering
+- `findFilesByType()`: Local file system scanning by extension
 
 #### `watcher.go` - File System Monitoring
 ```go
@@ -252,6 +295,18 @@ func (a *App) startSidecar() error {
 ```go
 const bucket = "duckietown"
 
+type supaFileRow struct {
+    ID          string `json:"id,omitempty"`
+    UserID      string `json:"user_id"`
+    Name        string `json:"name"`
+    Size        int64  `json:"size"`
+    MimeType    string `json:"mime_type"`
+    StoragePath string `json:"storage_path"`
+    FolderPath  string `json:"folder_path"`
+    CreatedAt   string `json:"created_at,omitempty"`
+    UpdatedAt   string `json:"updated_at,omitempty"`
+}
+
 func (a *App) storagePath(fileName, folderPath string) string {
     if folderPath == "" {
         return fmt.Sprintf("%s/%s", a.userID, fileName)
@@ -263,21 +318,37 @@ func (a *App) storagePath(fileName, folderPath string) string {
 **Responsibilities**:
 - File upload/download to Supabase Storage
 - PostgreSQL CRUD operations via REST API
-- Metadata management (files table)
+- Metadata management (files table with ID field)
 - Signed URL generation for file access
 - Storage listing and cleanup
 
 **Key Functions**:
 - `supaUploadFile()`: Upload file with upsert semantics
 - `supaUpsertFileRecord()`: Insert/update metadata with conflict resolution
-- `supaListFiles()`: Retrieve all files for user
+- `supaListFiles()`: Retrieve all files for user with ID field
 - `supaListStorageFiles()`: List all storage objects recursively
 - `supaGetFileURL()`: Generate signed URL for file access
+- `supaUpdateFileFolderPath()`: Update folder path on file move
+- `supaRenameFileRecord()`: Update name on file rename
 
 #### `auth.go` - Authentication & Session Management
 ```go
 const callbackPort = 49155
 const callbackURL = "http://localhost:49155/callback"
+
+var supaHTTPClient = func() *http.Client {
+    transport, ok := http.DefaultTransport.(*http.Transport)
+    if ok {
+        cloned := transport.Clone()
+        cloned.ForceAttemptHTTP2 = false
+        if cloned.TLSClientConfig == nil {
+            cloned.TLSClientConfig = &tls.Config{}
+        }
+        cloned.TLSClientConfig.NextProtos = []string{"http/1.1"}
+        return &http.Client{Timeout: 10 * time.Second, Transport: cloned}
+    }
+    return &http.Client{Timeout: 10 * time.Second}
+}()
 ```
 
 **Responsibilities**:
@@ -287,15 +358,22 @@ const callbackURL = "http://localhost:49155/callback"
 - Session persistence
 - Automatic token refresh on 401 errors
 - HTTP/1.1 transport for compatibility
+- Enhanced debugging with console logging
 
 **OAuth Flow**:
 1. Bind local port 49155
 2. Open browser with Supabase OAuth URL
 3. User authenticates with Google
 4. Supabase redirects to localhost callback
-5. HTML page extracts tokens from URL fragment
-6. Tokens POSTed to `/token` endpoint
-7. Session stored and user info fetched
+5. HTML page extracts tokens from URL fragment (with console logging)
+6. Tokens POSTed to `/token` endpoint (with request/response logging)
+7. Session stored and user info fetched (with success logging)
+
+**Enhanced Error Handling**:
+- Console logging for token extraction and validation
+- Detailed error messages in callback HTML
+- Network error handling with fallback messages
+- Improved supaDo retry logic with new request object creation
 
 #### `config.go` - Configuration Management
 ```go
@@ -381,14 +459,6 @@ def health():
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 100
 
-def _chunk_text(text: str) -> List[str]:
-    chunks = []
-    start = 0
-    while start < len(text):
-        end = start + CHUNK_SIZE
-        chunks.append(text[start:end])
-        start += CHUNK_SIZE - CHUNK_OVERLAP
-    return chunks
 ```
 
 **Responsibilities**:
@@ -402,7 +472,7 @@ def _chunk_text(text: str) -> List[str]:
 - **DOCX**: `python-docx` - extracts paragraphs
 - **XLSX**: `openpyxl` - extracts spreadsheet rows
 - **CSV**: Built-in csv reader
-- **Text files**: Direct reading with UTF-8 handling
+- **Text files**: Direct reading with UTF-8 handling (.txt, .md, .py, .js, .ts, .json, .yaml, .yml)
 - **Images**: Returns file path for captioning
 - **Audio/Video**: Returns metadata stub
 - **Other**: Generic file metadata
@@ -427,6 +497,35 @@ JINA_BATCH_SIZE = 8
 CHROMA_BATCH_SIZE = 100
 MAX_RETRIES = 5
 RETRY_BASE_DELAY = 2.0
+```
+
+**Endpoints**:
+- `POST /ingest/file`: Ingest a new file
+- `DELETE /ingest/file`: Delete file embeddings
+- `PATCH /ingest/move`: Update metadata on rename/move (no re-embed)
+- `GET /ingest/indexed`: List all indexed files
+
+**Enhanced Move Logic**:
+```python
+@router.patch("/move")
+def move_file_embeddings(req: MoveRequest):
+    """
+    Update ChromaDB metadata when a file is renamed or moved.
+    Reuses existing embeddings — no re-ingestion needed.
+    Strategy: Delete old chunks, create new chunks with updated IDs and metadata.
+    """
+    # Get all chunks for the old file name
+    results = collection.get(where={"file_name": req.old_name}, include=["embeddings", "documents", "metadatas"])
+    
+    # Build new IDs based on new_name to avoid collisions
+    new_ids = [_chunk_id(req.new_name, chunk_index) for chunk_index in range(len(old_metadatas))]
+    new_metadatas = [{**meta, "file_name": req.new_name} for meta in old_metadatas]
+    
+    # Delete old chunks
+    collection.delete(ids=old_ids)
+    
+    # Insert under new IDs with updated metadata, same embeddings
+    collection.upsert(ids=new_ids, embeddings=old_embeddings, documents=old_documents, metadatas=new_metadatas)
 ```
 
 **Responsibilities**:
@@ -514,18 +613,28 @@ TOP_K_DEFAULT = 50
 TOP_FALLBACK = 3
 
 TYPE_KEYWORDS = {
-    "image": "image", "photo": "image",
-    "pdf": "text", "document": "text",
-    "audio": "audio", "video": "video"
+    "image": "image", "images": "image", "photo": "image", "photos": "image",
+    "picture": "image", "pictures": "image", "jpg": "image", "jpeg": "image",
+    "png": "image", "gif": "image", "screenshot": "image", "screenshots": "image",
+    "pdf": "text", "pdfs": "text", "document": "text", "documents": "text",
+    "doc": "text", "docx": "text", "word": "text", "spreadsheet": "text",
+    "excel": "text", "xlsx": "text", "csv": "text", "text": "text",
+    "audio": "audio", "music": "audio",
+    "video": "video", "videos": "video",
 }
 ```
 
 **Responsibilities**:
 - Semantic search with similarity scoring
 - Type-aware filtering (images, PDFs, etc.)
+- Enhanced context retrieval with filename detection
 - RAG (Retrieval-Augmented Generation) chat
+- AI-powered organize intent parsing
 - Streaming response via Server-Sent Events
 - Context retrieval from ChromaDB
+
+**New Endpoints**:
+- `POST /search/organise-intent`: Parse natural language organize commands using Gemma
 
 **Semantic Search**:
 ```python
@@ -563,28 +672,114 @@ def _detect_type_filter(query: str) -> Optional[str]:
     return None
 ```
 
+**Enhanced Context Retrieval**:
+```python
+def _retrieve_context(message: str, user_id: str, file_name: Optional[str] = None, top_k: int = 8):
+    """
+    Smart retrieval with three strategies:
+    1. If file_name is set, fetch all chunks for that file directly
+    2. Detect filenames mentioned in the message → fetch those chunks directly
+    3. Semantic search for remaining slots
+    Merges and deduplicates results.
+    Returns (context_text, source_files_list)
+    """
+    collection = _get_collection(user_id)
+    
+    # Step 1: Explicitly named file
+    target_files = []
+    if file_name:
+        target_files.append(file_name)
+    
+    # Step 2: Detect filenames mentioned in the message
+    mentioned = _extract_mentioned_filenames(message, collection)
+    for f in mentioned:
+        if f not in target_files:
+            target_files.append(f)
+    
+    # Fetch chunks for target files
+    for tf in target_files:
+        file_chunks = collection.get(where={"file_name": tf}, include=["documents", "metadatas"])
+        # Take up to 20 chunks per file to avoid context overflow
+        chunks = file_chunks["documents"][:20]
+        for doc, meta in zip(chunks, file_chunks["metadatas"][:20]):
+            page = f" (page {meta['page']})" if meta.get("page") else ""
+            context_parts.append(f"[{tf}{page}]\n{doc}")
+        seen_files[tf] = 1.0  # direct match = 100%
+    
+    # Step 3: Semantic search to fill remaining context
+    query_emb = _embed_query(message)
+    results = collection.query(query_embeddings=[query_emb], n_results=top_k)
+    for doc, meta, dist in zip(results["documents"][0], results["metadatas"][0], results["distances"][0]):
+        sim = max(0.0, 1.0 - dist / 2.0)
+        fname = meta["file_name"]
+        if fname in seen_files:
+            continue  # already included via direct fetch
+        if sim < 0.3:
+            continue
+        page = f" (page {meta['page']})" if meta.get("page") else ""
+        context_parts.append(f"[{fname}{page}, relevance: {sim:.2f}]\n{doc}")
+        if fname not in seen_files or sim > seen_files[fname]:
+            seen_files[fname] = sim
+    
+    return "\n\n---\n\n".join(context_parts), source_files
+```
+
+**Filename Detection**:
+```python
+def _extract_mentioned_filenames(message: str, collection) -> List[str]:
+    """
+    Check if the message explicitly mentions any filename that exists in ChromaDB.
+    Returns list of matching file names.
+    """
+    results = collection.get(include=["metadatas"])
+    all_files = list({m["file_name"] for m in results["metadatas"]})
+    
+    mentioned = []
+    message_lower = message.lower()
+    for fname in all_files:
+        name_lower = fname.lower()
+        stem = name_lower.rsplit(".", 1)[0]  # filename without extension
+        if name_lower in message_lower or stem in message_lower:
+            mentioned.append(fname)
+    return mentioned
+```
+
 **RAG Chat Implementation**:
 ```python
 @router.post("/chat")
 async def chat(req: ChatRequest):
-    # Retrieve context
-    if req.file_name:
-        # Get all chunks for specific file
-        file_chunks = collection.get(where={"file_name": req.file_name})
+    # Smart context retrieval with filename detection
+    context_text, source_files = _retrieve_context(req.message, req.user_id, req.file_name, top_k=10)
+    
+    # Enhanced system prompt
+    system_prompt = (
+        "You are Duckietown AI, a helpful assistant for a personal file vault. "
+        "You have access to the content of the user's files. "
+        "Answer questions accurately based on the file content provided below. "
+        "Always cite which file your answer comes from. "
+        "If the file content is provided, use it — don't say you can't access files.\n\n"
+    )
+    if context_text:
+        system_prompt += f"FILE CONTENT FROM THE VAULT:\n\n{context_text}"
     else:
-        # Semantic retrieval for general questions
-        query_emb = _embed_query(req.message)
-        results = collection.query(query_embeddings=[query_emb])
+        system_prompt += (
+            "No relevant file content was found for this query. "
+            "Tell the user which files you couldn't find and suggest they check if the files have been ingested."
+        )
     
-    # Build system prompt with context
-    system_prompt = f"You are Duckietown AI... FILE CONTENT:\n{context_text}"
-    
-    # Stream response via SSE
+    # Stream response via SSE with increased max_tokens
     async def event_stream():
-        yield sources
-        async with httpx.AsyncClient() as client:
-            async for line in response.aiter_lines():
-                yield token
+        yield f"data: {json.dumps({'type': 'sources', 'files': source_files})}\n\n"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            async with client.stream("POST", OPENROUTER_URL, json={
+                "model": CHAT_MODEL,
+                "messages": messages,
+                "stream": True,
+                "max_tokens": 2048,  # Increased from 1024
+                "temperature": 0.3,
+            }) as response:
+                async for line in response.aiter_lines():
+                    # Stream tokens
     
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 ```
@@ -599,6 +794,141 @@ data: {"type": "token", "content": " on"}
 
 data: [DONE]
 ```
+
+### Organize Intent Parsing
+
+**AI-Powered Command Understanding**:
+```python
+@router.post("/organise-intent")
+def parse_organise_intent(req: OrganiseIntentRequest):
+    """
+    Use Gemma to parse a natural language organise command into structured intent.
+    Returns { is_organise: bool, query: str, folder_name: str, type_filter: str|null }
+
+    Examples:
+      "group all images into a folder called photos"
+        → { is_organise: true, query: "images", folder_name: "photos", type_filter: "image" }
+      "put all legal documents in legal"
+        → { is_organise: true, query: "legal documents contracts", folder_name: "legal", type_filter: null }
+      "what does the Q3 report say?"
+        → { is_organise: false }
+    """
+```
+
+**Intent Detection Logic**:
+- Uses Gemma 3-12B-IT (faster model for intent parsing)
+- Temperature: 0.0 (deterministic output)
+- Returns structured JSON with organize parameters
+- Detects type filters: image, text, audio, video
+- Generates semantic search queries for content-based organization
+
+**Type Filter Rules**:
+- "image" if user says: images, photos, pictures, screenshots, jpg, png, gif
+- "text" if user says: documents, pdfs, word files, spreadsheets, csvs, excel, docs
+- "audio" if user says: audio, music, sound files
+- "video" if user says: videos, movies, clips
+- null for everything else or mixed types
+
+### Enhanced File Organization
+
+**OrganizeFolder with Type Filtering**:
+```go
+func (a *App) OrganiseFolder(currentFolderPath, query, newFolderName, typeFilter string) (OrganiseFolderResult, error) {
+    // Semantic search across all files (entire vault)
+    matches, err := a.semanticSearchWithTypeFilter(query, typeFilter, 200)
+    
+    // For type-based organise, also scan vault directly to catch files
+    // not yet in ChromaDB or with similarity below threshold
+    if typeFilter != "" {
+        localMatches := a.findFilesByType(typeFilter)
+        // Merge semantic results with local file scan
+        for _, name := range localMatches {
+            if !existing[name] {
+                matches = append(matches, SearchResult{
+                    FileName:   name,
+                    Similarity: 0.5,
+                    Modality:   typeFilter,
+                })
+            }
+        }
+    }
+    
+    // Create target folder
+    a.CreateFolder(targetPath)
+    
+    // Move all matching files
+    for _, match := range matches {
+        a.MoveFileToFolder(match.FileName, targetPath)
+    }
+}
+```
+
+**Key Features**:
+- Searches across ENTIRE vault (all subfolders)
+- Supports type_filter: "image", "text", "audio", "video", or "" for semantic-only
+- Combines semantic search with local file system scanning
+- Prevents duplicate file moves
+- Skips files already in target folder
+
+**findFilesByType Function**:
+```go
+func (a *App) findFilesByType(typeFilter string) []string {
+    imageExts := map[string]bool{
+        ".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
+        ".webp": true, ".bmp": true, ".svg": true, ".heic": true, ".tiff": true,
+    }
+    audioExts := map[string]bool{
+        ".mp3": true, ".wav": true, ".aac": true, ".flac": true,
+        ".ogg": true, ".m4a": true, ".wma": true,
+    }
+    videoExts := map[string]bool{
+        ".mp4": true, ".mov": true, ".avi": true, ".mkv": true,
+        ".webm": true, ".wmv": true, ".m4v": true,
+    }
+    textExts := map[string]bool{
+        ".pdf": true, ".doc": true, ".docx": true, ".txt": true,
+        ".md": true, ".xlsx": true, ".xls": true, ".csv": true,
+        ".pptx": true, ".ppt": true, ".rtf": true,
+    }
+    
+    // Walk vault and collect matching files
+    filepath.WalkDir(a.vaultPath, func(path string, d os.DirEntry, err error) error {
+        if extMap[ext] {
+            names = append(names, name)
+        }
+        return nil
+    })
+    return names
+}
+```
+
+**Extension Coverage**:
+- **Images**: jpg, jpeg, png, gif, webp, bmp, svg, heic, tiff
+- **Audio**: mp3, wav, aac, flac, ogg, m4a, wma
+- **Video**: mp4, mov, avi, mkv, webm, wmv, m4v
+- **Text**: pdf, doc, docx, txt, md, xlsx, xls, csv, pptx, ppt, rtf
+
+### Semantic Search with Type Filter
+
+**Explicit Type Filtering**:
+```go
+func (a *App) semanticSearchWithTypeFilter(query, typeFilter string, topK int) ([]SearchResult, error) {
+    body, _ := json.Marshal(queryRequest{
+        Query:      query,
+        UserID:     a.userID,
+        TopK:       topK,  // Increased to 200 for type-filtered searches
+        TypeFilter: typeFilter,
+    })
+    resp, err := client.Post(sidecarBase+"/search/query", "application/json", bytes.NewReader(body))
+    // ...
+}
+```
+
+**Type Filter Parameter**:
+- Allows explicit filtering by modality
+- Bypasses keyword detection
+- Useful for programmatic organization
+- Supports: "image", "text", "audio", "video"
 
 ### 3. Frontend (`duckietown/frontend/`)
 
