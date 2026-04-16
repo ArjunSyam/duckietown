@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -24,7 +25,8 @@ type FileRecord struct {
 
 // ── Ingest queue ───────────────────────────────────────────────────────────────
 
-var ingestQueue = make(chan ingestJob, 64)
+var ingestQueue = make(chan ingestJob, 256)
+var ingestPending atomic.Int32 // count of jobs waiting or in progress
 
 type ingestJob struct {
 	filePath string
@@ -34,19 +36,45 @@ type ingestJob struct {
 func (a *App) startIngestWorker() {
 	go func() {
 		for job := range ingestQueue {
+			// Emit "ingesting" event so frontend can show status
+			wailsruntime.EventsEmit(a.ctx, "ingest-start", map[string]string{
+				"file_name": job.fileName,
+				"pending":   fmt.Sprintf("%d", ingestPending.Load()),
+			})
+
 			if err := a.IngestFile(job.filePath, job.fileName); err != nil {
 				fmt.Printf("⚠️ Ingest failed for %s: %v\n", job.fileName, err)
+				wailsruntime.EventsEmit(a.ctx, "ingest-error", map[string]string{
+					"file_name": job.fileName,
+					"error":     err.Error(),
+				})
 			} else {
 				fmt.Printf("🧠 Ingested: %s\n", job.fileName)
+			}
+
+			remaining := ingestPending.Add(-1)
+
+			// Emit progress after each file
+			wailsruntime.EventsEmit(a.ctx, "ingest-progress", map[string]interface{}{
+				"file_name": job.fileName,
+				"remaining": remaining,
+			})
+
+			// When queue fully drained, emit done
+			if remaining == 0 {
+				wailsruntime.EventsEmit(a.ctx, "ingest-done", nil)
 			}
 		}
 	}()
 }
 
 func queueIngest(filePath, fileName string) {
+	ingestPending.Add(1)
 	select {
 	case ingestQueue <- ingestJob{filePath, fileName}:
 	default:
+		// Queue full — decrement counter since job won't run
+		ingestPending.Add(-1)
 		fmt.Printf("⚠️ Ingest queue full, skipping %s\n", fileName)
 	}
 }
@@ -60,7 +88,6 @@ func (a *App) ListFiles() ([]FileRecord, error) {
 func (a *App) DeleteFile(fileName string) error {
 	absPath, folderPath, err := a.findFileInVault(fileName)
 	if err != nil {
-		// Try root
 		absPath = filepath.Join(a.vaultPath, fileName)
 		folderPath = ""
 	}
@@ -75,12 +102,10 @@ func (a *App) DeleteFile(fileName string) error {
 	return nil
 }
 
-// RenameFile renames a file in place (same folder). Updates ChromaDB metadata, not re-embed.
 func (a *App) RenameFile(oldName, newName string) error {
 	if a.vaultPath == "" {
 		return fmt.Errorf("no vault path")
 	}
-
 	oldAbsPath, folderPath, err := a.findFileInVault(oldName)
 	if err != nil {
 		return fmt.Errorf("file not found: %w", err)
@@ -92,12 +117,10 @@ func (a *App) RenameFile(oldName, newName string) error {
 	}
 
 	newSP := a.storagePath(newName, folderPath)
-	// Upload under new name, delete old
 	a.supaUploadFile(newAbsPath, newName, folderPath)
 	a.supaDeleteStorageFile(oldName, folderPath)
 	a.supaRenameFileRecord(oldName, newName, folderPath, newSP)
 
-	// Update ChromaDB metadata only — no re-ingestion
 	go func() {
 		if err := a.MoveFileEmbeddings(oldName, newName); err != nil {
 			fmt.Printf("⚠️ Failed to update embeddings for rename %s → %s: %v\n", oldName, newName, err)
@@ -177,7 +200,7 @@ func (a *App) fullSync() {
 		fmt.Printf("dbfile err: %v\n", err)
 		return
 	}
-	dbSet := make(map[string]string) // name → folderPath
+	dbSet := make(map[string]string)
 	for _, f := range dbFiles {
 		dbSet[f.Name] = f.FolderPath
 	}
@@ -186,14 +209,12 @@ func (a *App) fullSync() {
 	if err != nil {
 		return
 	}
-	// storageSet: just the filename (last segment) for quick lookup
 	storageSet := make(map[string]bool)
 	for _, sp := range storageFiles {
 		parts := strings.Split(sp, "/")
 		storageSet[parts[len(parts)-1]] = true
 	}
 
-	// Get already-indexed files from ChromaDB
 	indexed, err := a.GetIndexedFiles()
 	if err != nil {
 		fmt.Printf("⚠️ Could not get indexed files, will re-ingest all: %v\n", err)
@@ -201,9 +222,21 @@ func (a *App) fullSync() {
 	}
 	fmt.Printf("📚 Already indexed: %d files\n", len(indexed))
 
-	// Upload + ingest files not yet in Supabase/ChromaDB
+	// Count how many need ingesting so frontend can show total
+	toIngest := 0
+	for name := range localFiles {
+		if !indexed[name] {
+			toIngest++
+		}
+	}
+	if toIngest > 0 {
+		wailsruntime.EventsEmit(a.ctx, "ingest-queued", map[string]interface{}{
+			"total": toIngest,
+		})
+	}
+
 	for name, entry := range localFiles {
-		if !storageSet[name] || dbSet[name] == "" && entry.folder == "" {
+		if !storageSet[name] || dbSet[name] == "" {
 			a.supaUploadFile(entry.abs, name, entry.folder)
 		}
 		if !indexed[name] {
@@ -212,7 +245,6 @@ func (a *App) fullSync() {
 		}
 	}
 
-	// Delete DB records for files no longer local or in storage
 	for _, f := range dbFiles {
 		_, existsLocally := localFiles[f.Name]
 		if !existsLocally && !storageSet[f.Name] {
@@ -220,7 +252,6 @@ func (a *App) fullSync() {
 		}
 	}
 
-	// Delete storage files no longer local
 	for _, sp := range storageFiles {
 		parts := strings.Split(sp, "/")
 		name := parts[len(parts)-1]

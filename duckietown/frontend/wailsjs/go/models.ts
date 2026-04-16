@@ -76,6 +76,26 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	export class OrganiseIntent {
+	    is_organise: boolean;
+	    query: string;
+	    folder_name: string;
+	    type_filter: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new OrganiseIntent(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.is_organise = source["is_organise"];
+	        this.query = source["query"];
+	        this.folder_name = source["folder_name"];
+	        this.type_filter = source["type_filter"];
+	        this.error = source["error"];
+	    }
+	}
 	export class SearchResult {
 	    file_name: string;
 	    similarity: number;

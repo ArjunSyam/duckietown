@@ -66,8 +66,12 @@ export function OpenVaultFolder() {
   return window['go']['main']['App']['OpenVaultFolder']();
 }
 
-export function OrganiseFolder(arg1, arg2, arg3) {
-  return window['go']['main']['App']['OrganiseFolder'](arg1, arg2, arg3);
+export function OrganiseFolder(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['OrganiseFolder'](arg1, arg2, arg3, arg4);
+}
+
+export function ParseOrganiseIntent(arg1) {
+  return window['go']['main']['App']['ParseOrganiseIntent'](arg1);
 }
 
 export function RenameFile(arg1, arg2) {

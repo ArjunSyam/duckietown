@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,9 +24,10 @@ type SearchResult struct {
 }
 
 type queryRequest struct {
-	Query  string `json:"query"`
-	UserID string `json:"user_id"`
-	TopK   int    `json:"top_k"`
+	Query      string `json:"query"`
+	UserID     string `json:"user_id"`
+	TopK       int    `json:"top_k"`
+	TypeFilter string `json:"type_filter,omitempty"`
 }
 
 type queryResponse struct {
@@ -43,7 +46,6 @@ func (a *App) SemanticSearch(query string, topK int) ([]SearchResult, error) {
 	if topK <= 0 {
 		topK = 50
 	}
-
 	body, _ := json.Marshal(queryRequest{Query: query, UserID: a.userID, TopK: topK})
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Post(sidecarBase+"/search/query", "application/json", bytes.NewReader(body))
@@ -62,7 +64,68 @@ func (a *App) SemanticSearch(query string, topK int) ([]SearchResult, error) {
 	return result.Results, nil
 }
 
-// ChatMessage is shared between Go and the frontend.
+func (a *App) semanticSearchWithTypeFilter(query, typeFilter string, topK int) ([]SearchResult, error) {
+	if a.userID == "" {
+		return nil, fmt.Errorf("not authenticated")
+	}
+	if !sidecarReady() {
+		return nil, fmt.Errorf("AI search not available")
+	}
+	if topK <= 0 {
+		topK = 200
+	}
+	body, _ := json.Marshal(queryRequest{
+		Query:      query,
+		UserID:     a.userID,
+		TopK:       topK,
+		TypeFilter: typeFilter,
+	})
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Post(sidecarBase+"/search/query", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result queryResponse
+	json.NewDecoder(resp.Body).Decode(&result)
+	return result.Results, nil
+}
+
+// ── Organise intent ────────────────────────────────────────────────────────────
+
+type OrganiseIntent struct {
+	IsOrganise bool   `json:"is_organise"`
+	Query      string `json:"query"`
+	FolderName string `json:"folder_name"`
+	TypeFilter string `json:"type_filter"`
+	Error      string `json:"error,omitempty"`
+}
+
+// ParseOrganiseIntent calls the sidecar to determine if a message is an organise
+// request and extracts its structured parameters. Exposed to frontend via Wails.
+func (a *App) ParseOrganiseIntent(message string) (OrganiseIntent, error) {
+	if !sidecarReady() {
+		return OrganiseIntent{}, fmt.Errorf("sidecar not ready")
+	}
+	body, _ := json.Marshal(map[string]string{
+		"message": message,
+		"user_id": a.userID,
+	})
+	client := &http.Client{Timeout: 20 * time.Second}
+	resp, err := client.Post(sidecarBase+"/search/organise-intent", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return OrganiseIntent{}, err
+	}
+	defer resp.Body.Close()
+
+	var intent OrganiseIntent
+	json.NewDecoder(resp.Body).Decode(&intent)
+	return intent, nil
+}
+
+// ── Chat ───────────────────────────────────────────────────────────────────────
+
 type ChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -75,7 +138,6 @@ type chatRequest struct {
 	FileName string        `json:"file_name,omitempty"`
 }
 
-// ChatWithAgent streams a RAG chat response back to the frontend via Wails events.
 func (a *App) ChatWithAgent(message string, history []ChatMessage, fileName string) {
 	if a.userID == "" {
 		wailsruntime.EventsEmit(a.ctx, "chat-error", "not authenticated")
@@ -138,7 +200,8 @@ func (a *App) ChatWithAgent(message string, history []ChatMessage, fileName stri
 	}()
 }
 
-// OrganiseFolderResult describes the outcome of an AI-driven organisation.
+// ── Organise ───────────────────────────────────────────────────────────────────
+
 type OrganiseFolderResult struct {
 	FolderName string   `json:"folder_name"`
 	Files      []string `json:"files"`
@@ -146,47 +209,66 @@ type OrganiseFolderResult struct {
 	Error      string   `json:"error,omitempty"`
 }
 
-// OrganiseFolder uses semantic search to find files matching a query, creates a
-// subfolder with the given name, and moves matching files into it.
+// OrganiseFolder finds files matching a query across the ENTIRE vault (all subfolders),
+// creates the target folder, and moves matching files into it.
+// typeFilter: "image", "text", "audio", "video", or "" for semantic-only.
 // Exposed to frontend via Wails.
-// Example: OrganiseFolder("work/projects", "cat photos", "cats")
-//
-//	→ searches for files similar to "cat photos"
-//	→ creates folder "work/projects/cats"
-//	→ moves matching files there
-func (a *App) OrganiseFolder(currentFolderPath, query, newFolderName string) (OrganiseFolderResult, error) {
+func (a *App) OrganiseFolder(currentFolderPath, query, newFolderName, typeFilter string) (OrganiseFolderResult, error) {
 	result := OrganiseFolderResult{FolderName: newFolderName}
 
 	if a.userID == "" {
 		return result, fmt.Errorf("not authenticated")
 	}
 
-	// Semantic search for matching files
-	matches, err := a.SemanticSearch(query, 50)
+	// Semantic search across all files
+	matches, err := a.semanticSearchWithTypeFilter(query, typeFilter, 200)
 	if err != nil {
 		return result, fmt.Errorf("search failed: %w", err)
 	}
-	if len(matches) == 0 {
-		return result, fmt.Errorf("no matching files found for query: %s", query)
+
+	// For type-based organise, also scan vault directly to catch files
+	// not yet in ChromaDB or with similarity below threshold
+	if typeFilter != "" {
+		localMatches := a.findFilesByType(typeFilter)
+		existing := make(map[string]bool)
+		for _, m := range matches {
+			existing[m.FileName] = true
+		}
+		for _, name := range localMatches {
+			if !existing[name] {
+				matches = append(matches, SearchResult{
+					FileName:   name,
+					Similarity: 0.5,
+					Modality:   typeFilter,
+				})
+			}
+		}
 	}
 
-	// Build target folder path
-	var targetPath string
-	if currentFolderPath == "" {
-		targetPath = newFolderName
-	} else {
+	if len(matches) == 0 {
+		return result, fmt.Errorf("no matching files found for: %s", query)
+	}
+
+	// Build target path
+	targetPath := newFolderName
+	if currentFolderPath != "" {
 		targetPath = currentFolderPath + "/" + newFolderName
 	}
 
-	// Create the folder
 	if err := a.CreateFolder(targetPath); err != nil {
 		return result, fmt.Errorf("could not create folder: %w", err)
 	}
 	result.Created = true
 
-	// Move each matched file into the new folder
 	var movedFiles []string
 	for _, match := range matches {
+		_, currentFolder, err := a.findFileInVault(match.FileName)
+		if err != nil {
+			continue
+		}
+		if currentFolder == targetPath {
+			continue // already there
+		}
 		if err := a.MoveFileToFolder(match.FileName, targetPath); err != nil {
 			fmt.Printf("⚠️ Could not move %s: %v\n", match.FileName, err)
 			continue
@@ -198,4 +280,61 @@ func (a *App) OrganiseFolder(currentFolderPath, query, newFolderName string) (Or
 	wailsruntime.EventsEmit(a.ctx, "organise-complete", result)
 	fmt.Printf("✅ Organised %d files into %s\n", len(movedFiles), targetPath)
 	return result, nil
+}
+
+// findFilesByType scans the entire vault and returns filenames matching a modality.
+func (a *App) findFilesByType(typeFilter string) []string {
+	imageExts := map[string]bool{
+		".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
+		".webp": true, ".bmp": true, ".svg": true, ".heic": true, ".tiff": true,
+	}
+	audioExts := map[string]bool{
+		".mp3": true, ".wav": true, ".aac": true, ".flac": true,
+		".ogg": true, ".m4a": true, ".wma": true,
+	}
+	videoExts := map[string]bool{
+		".mp4": true, ".mov": true, ".avi": true, ".mkv": true,
+		".webm": true, ".wmv": true, ".m4v": true,
+	}
+	textExts := map[string]bool{
+		".pdf": true, ".doc": true, ".docx": true, ".txt": true,
+		".md": true, ".xlsx": true, ".xls": true, ".csv": true,
+		".pptx": true, ".ppt": true, ".rtf": true,
+	}
+
+	var extMap map[string]bool
+	switch typeFilter {
+	case "image":
+		extMap = imageExts
+	case "audio":
+		extMap = audioExts
+	case "video":
+		extMap = videoExts
+	case "text":
+		extMap = textExts
+	default:
+		return nil
+	}
+
+	var names []string
+	filepath.WalkDir(a.vaultPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if shouldSkipFile(name) {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(name))
+		if extMap[ext] {
+			names = append(names, name)
+		}
+		return nil
+	})
+	return names
+}
+
+// getFileExt returns the lowercase extension of a filename including the dot.
+func getFileExt(name string) string {
+	return strings.ToLower(filepath.Ext(name))
 }
