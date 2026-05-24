@@ -15,7 +15,7 @@ func httpClientTimeout() time.Duration {
 }
 
 func sidecarReady() bool {
-	client := &http.Client{Timeout: 500 * time.Millisecond}
+	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get(sidecarBase + "/health")
 	if err != nil {
 		return false
