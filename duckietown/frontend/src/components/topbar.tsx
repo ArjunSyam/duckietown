@@ -1,10 +1,11 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   ChevronRight,
   Home,
   Sparkles,
   Loader2,
   CheckCircle2,
+  Database,
 } from "lucide-react";
 import { wails } from "../lib/wails";
 
@@ -27,33 +28,53 @@ export function Topbar({
 
   const [ingestState, setIngestState] = useState<IngestState>("idle");
   const [currentFile, setCurrentFile] = useState("");
-  const [remaining, setRemaining] = useState(0);
+  const [completed, setCompleted] = useState(0);
   const [total, setTotal] = useState(0);
+  // Persist the last completed count so it always shows after done
+  const lastTotalRef = useRef(0);
 
   useEffect(() => {
     wails.on("ingest-queued", (data: { total: number }) => {
       setTotal(data.total);
-      setRemaining(data.total);
+      setCompleted(0);
       setIngestState("ingesting");
     });
 
     wails.on("ingest-start", (data: { file_name: string }) => {
       setCurrentFile(data.file_name);
       setIngestState("ingesting");
+      // If a single file arrives (watcher) with no prior queue event, total = 1
+      setTotal((t) => (t === 0 ? 1 : t));
     });
 
-    wails.on("ingest-progress", (data: { remaining: number }) => {
-      setRemaining(data.remaining);
-    });
+    wails.on(
+      "ingest-progress",
+      (data: { file_name: string; remaining: number }) => {
+        // completed = total - remaining
+        setTotal((t) => {
+          const done = t - data.remaining;
+          setCompleted(done);
+          return t;
+        });
+        setCurrentFile(data.file_name);
+      },
+    );
 
     wails.on("ingest-done", () => {
+      // Snapshot the total for the done pill before resetting
+      setTotal((t) => {
+        lastTotalRef.current = t;
+        setCompleted(t);
+        return t;
+      });
       setIngestState("done");
       setCurrentFile("");
-      setTimeout(() => {
-        setIngestState("idle");
-        setTotal(0);
-        setRemaining(0);
-      }, 4000);
+      // NO auto-clear — stays as "done" permanently until next ingest
+    });
+
+    // When a new ingest batch starts, reset done state
+    wails.on("ingest-queued", () => {
+      setIngestState("ingesting");
     });
 
     return () => {
@@ -64,13 +85,14 @@ export function Topbar({
     };
   }, []);
 
-  const completed = total > 0 ? total - remaining : 0;
   const shortName = (name: string) =>
-    name.length > 22 ? name.slice(0, 20) + "…" : name;
+    name.length > 24 ? name.slice(0, 22) + "…" : name;
+
+  const progressPct = total > 0 ? Math.round((completed / total) * 100) : 0;
 
   return (
     <div className="flex items-center gap-2 px-4 h-11 border-b border-[#3e3e42] bg-[#1e1e1e] shrink-0">
-      {/* Breadcrumb — left */}
+      {/* ── Breadcrumb — left ─────────────────────────── */}
       <div className="flex items-center gap-1 text-xs min-w-0 flex-1">
         <button
           onClick={() => onNavigate("")}
@@ -100,29 +122,49 @@ export function Topbar({
         })}
       </div>
 
-      {/* Ingest status — center */}
-      <div className="flex items-center justify-center flex-1">
+      {/* ── Ingest status — centre ────────────────────── */}
+      <div className="flex items-center justify-center flex-1 min-w-0">
         {ingestState === "ingesting" && (
-          <div className="flex items-center gap-1.5 text-[10px] text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 rounded-full px-3 py-1">
-            <Loader2 size={10} className="animate-spin shrink-0" />
-            <span className="font-mono whitespace-nowrap">
-              {total > 1
-                ? `Indexing ${completed + 1}/${total} · ${shortName(currentFile)}`
-                : `Indexing · ${shortName(currentFile)}`}
-            </span>
+          <div className="flex flex-col items-center gap-0.5 w-full max-w-[280px]">
+            {/* Top row: spinner + label */}
+            <div className="flex items-center gap-1.5 text-[10px] text-indigo-400">
+              <Loader2 size={10} className="animate-spin shrink-0" />
+              <span className="font-mono whitespace-nowrap truncate">
+                {total > 1
+                  ? `Indexing ${completed}/${total} · ${shortName(currentFile)}`
+                  : `Indexing · ${shortName(currentFile)}`}
+              </span>
+            </div>
+            {/* Progress bar (only when we know the total) */}
+            {total > 1 && (
+              <div className="w-full h-[3px] bg-[#2d2d2d] rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-indigo-500 rounded-full transition-all duration-300"
+                  style={{ width: `${progressPct}%` }}
+                />
+              </div>
+            )}
           </div>
         )}
+
         {ingestState === "done" && (
           <div className="flex items-center gap-1.5 text-[10px] text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded-full px-3 py-1">
             <CheckCircle2 size={10} className="shrink-0" />
             <span className="font-mono whitespace-nowrap">
-              {total > 1 ? `${total} files indexed` : "File indexed"}
+              All files indexed
             </span>
+          </div>
+        )}
+
+        {ingestState === "idle" && (
+          <div className="flex items-center gap-1.5 text-[10px] text-[#3a3a3a]">
+            <Database size={10} className="shrink-0" />
+            <span className="font-mono">Vault ready</span>
           </div>
         )}
       </div>
 
-      {/* Ask AI button — right */}
+      {/* ── Ask AI button — right ─────────────────────── */}
       <div className="flex items-center justify-end flex-1">
         <button
           onClick={onAskAi}
