@@ -105,9 +105,6 @@ type OrganiseIntent struct {
 // ParseOrganiseIntent calls the sidecar to determine if a message is an organise
 // request and extracts its structured parameters. Exposed to frontend via Wails.
 func (a *App) ParseOrganiseIntent(message string) (OrganiseIntent, error) {
-	if !sidecarReady() {
-		return OrganiseIntent{}, fmt.Errorf("sidecar not ready")
-	}
 	body, _ := json.Marshal(map[string]string{
 		"message": message,
 		"user_id": a.userID,
@@ -143,11 +140,6 @@ func (a *App) ChatWithAgent(message string, history []ChatMessage, fileName stri
 		wailsruntime.EventsEmit(a.ctx, "chat-error", "not authenticated")
 		return
 	}
-	if !sidecarReady() {
-		wailsruntime.EventsEmit(a.ctx, "chat-error", "AI not available — sidecar not running")
-		return
-	}
-
 	body, _ := json.Marshal(chatRequest{
 		Message:  message,
 		UserID:   a.userID,

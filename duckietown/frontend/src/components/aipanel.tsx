@@ -52,9 +52,13 @@ export function AIPanel({
   const [isParsingIntent, setIsParsingIntent] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Guard against React Strict Mode double-firing the auto-summarise
+  const autoSentRef = useRef(false);
 
-  // Fresh state on every open
+  // Fresh state on every open (sessionKey increments each time panel opens)
   useEffect(() => {
+    autoSentRef.current = false;
+
     const welcome: Message = {
       id: "welcome",
       role: "assistant",
@@ -70,9 +74,13 @@ export function AIPanel({
     setTimeout(() => inputRef.current?.focus(), 100);
 
     if (targetFile) {
-      setTimeout(() => {
+      // Use ref guard so React Strict Mode double-invoke doesn't send twice
+      const timer = setTimeout(() => {
+        if (autoSentRef.current) return;
+        autoSentRef.current = true;
         triggerChat(`Summarise ${targetFile}`, [], targetFile);
       }, 400);
+      return () => clearTimeout(timer);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionKey]);
@@ -168,7 +176,6 @@ export function AIPanel({
     typeFilter: string,
   ) => {
     setIsOrganising(true);
-
     const userMsg: Message = {
       id: Date.now().toString(),
       role: "user",
@@ -181,7 +188,6 @@ export function AIPanel({
       isOrganise: true,
     };
     setMessages((prev) => [...prev, userMsg, pendingMsg]);
-
     try {
       const result = await wails.organiseFolder(
         currentFolder,
@@ -219,12 +225,10 @@ export function AIPanel({
     if (!q || isStreaming || isOrganising || isParsingIntent) return;
     setInput("");
 
-    // Ask Gemma to parse intent — is this an organise request?
     setIsParsingIntent(true);
     try {
       const intent = await wails.parseOrganiseIntent(q);
       setIsParsingIntent(false);
-
       if (intent.is_organise && intent.folder_name) {
         await triggerOrganise(
           intent.query ?? q,
@@ -235,10 +239,8 @@ export function AIPanel({
       }
     } catch {
       setIsParsingIntent(false);
-      // Intent parse failed — fall through to chat
     }
 
-    // Regular chat
     triggerChat(q, messages);
   };
 
@@ -272,14 +274,7 @@ export function AIPanel({
             {targetFile}
           </Badge>
         )}
-        {currentFolder && (
-          <Badge
-            variant="outline"
-            className="text-[9px] font-mono ml-1 h-4 px-1.5 max-w-[100px] truncate text-indigo-400/70"
-          >
-            {currentFolder}
-          </Badge>
-        )}
+
         <button
           onClick={onClose}
           className="ml-auto text-[#4a4a4a] hover:text-[#d4d4d4] transition-colors shrink-0"
@@ -295,7 +290,6 @@ export function AIPanel({
             {messages.map((msg) => (
               <MessageBubble key={msg.id} message={msg} />
             ))}
-            {/* Intent parsing indicator */}
             {isParsingIntent && (
               <div className="flex gap-2 items-center text-[11px] text-[#4a4a4a]">
                 <Loader2 size={11} className="animate-spin text-indigo-400" />
@@ -354,8 +348,6 @@ export function AIPanel({
   );
 }
 
-// ── Message bubble ─────────────────────────────────────────────────────────────
-
 function MessageBubble({ message }: { message: Message }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const isUser = message.role === "user";
@@ -364,13 +356,13 @@ function MessageBubble({ message }: { message: Message }) {
     <div className={`flex gap-2 ${isUser ? "flex-row-reverse" : "flex-row"}`}>
       <div
         className={`w-6 h-6 rounded-full flex items-center justify-center shrink-0 mt-0.5
-          ${
-            isUser
-              ? "bg-indigo-500/20"
-              : message.isOrganise
-                ? "bg-emerald-500/20 border border-emerald-500/30"
-                : "bg-[#2d2d30] border border-[#3e3e42]"
-          }`}
+        ${
+          isUser
+            ? "bg-indigo-500/20"
+            : message.isOrganise
+              ? "bg-emerald-500/20 border border-emerald-500/30"
+              : "bg-[#2d2d30] border border-[#3e3e42]"
+        }`}
       >
         {isUser ? (
           <User size={11} className="text-indigo-400" />
@@ -380,19 +372,18 @@ function MessageBubble({ message }: { message: Message }) {
           <Bot size={11} className="text-[#6a6a6a]" />
         )}
       </div>
-
       <div
         className={`flex flex-col gap-1 max-w-[82%] ${isUser ? "items-end" : "items-start"}`}
       >
         <div
           className={`rounded-xl px-3 py-2 text-xs leading-relaxed whitespace-pre-wrap break-words
-            ${
-              isUser
-                ? "bg-indigo-500/20 text-[#d4d4d4] border border-indigo-500/20"
-                : message.isOrganise
-                  ? "bg-emerald-500/10 text-[#d4d4d4] border border-emerald-500/20"
-                  : "bg-[#252526] text-[#d4d4d4] border border-[#3e3e42]"
-            }`}
+          ${
+            isUser
+              ? "bg-indigo-500/20 text-[#d4d4d4] border border-indigo-500/20"
+              : message.isOrganise
+                ? "bg-emerald-500/10 text-[#d4d4d4] border border-emerald-500/20"
+                : "bg-[#252526] text-[#d4d4d4] border border-[#3e3e42]"
+          }`}
         >
           {message.content || (
             <span className="flex gap-1 items-center">
@@ -411,7 +402,6 @@ function MessageBubble({ message }: { message: Message }) {
             </span>
           )}
         </div>
-
         {message.sources && message.sources.length > 0 && (
           <div className="w-full">
             <button

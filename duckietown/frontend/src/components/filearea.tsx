@@ -91,9 +91,40 @@ function getIconMeta(
     name.endsWith(".rar")
   )
     return { icon: <Archive {...p} />, color: "#fbbf24", label: "Archive" };
-  if (mime.includes("text"))
+  if (mime.includes("text") || name.endsWith(".txt") || name.endsWith(".md"))
     return { icon: <FileText {...p} />, color: "#94a3b8", label: "Text" };
   return { icon: <Package {...p} />, color: "#6b7280", label: "File" };
+}
+
+// Clean readable type label from mime or filename
+function getTypeLabel(mime: string, name: string): string {
+  const ext = name.split(".").pop()?.toUpperCase();
+  if (mime.startsWith("image/")) return ext ?? "Image";
+  if (mime.startsWith("video/")) return ext ?? "Video";
+  if (mime.startsWith("audio/")) return ext ?? "Audio";
+  if (mime.includes("pdf")) return "PDF";
+  if (
+    mime.includes("wordprocessingml") ||
+    mime.includes("msword") ||
+    name.endsWith(".docx") ||
+    name.endsWith(".doc")
+  )
+    return "DOCX";
+  if (
+    mime.includes("spreadsheetml") ||
+    mime.includes("ms-excel") ||
+    name.endsWith(".xlsx")
+  )
+    return "XLSX";
+  if (name.endsWith(".csv")) return "CSV";
+  if (mime.includes("zip") || mime.includes("tar") || name.endsWith(".zip"))
+    return "ZIP";
+  if (name.endsWith(".rar")) return "RAR";
+  if (mime.includes("text/plain") || name.endsWith(".txt")) return "TXT";
+  if (name.endsWith(".md")) return "MD";
+  // Fallback: use file extension if available
+  if (ext && ext.length <= 5) return ext;
+  return "File";
 }
 
 // ── Similarity badge ───────────────────────────────────
@@ -108,7 +139,7 @@ function SimilarityBadge({ score }: { score: number }) {
         : "text-[#6a6a6a] border-[#3e3e42]";
   return (
     <span
-      className={`text-[9px] font-mono border rounded px-1 py-0.5 ${color}`}
+      className={`text-[9px] font-mono border rounded px-1 py-0.5 whitespace-nowrap ${color}`}
     >
       {pct}%
     </span>
@@ -143,7 +174,7 @@ function RenameInput({
   );
 }
 
-// ── Image thumbnail with lazy loading ─────────────────
+// ── Image thumbnail ────────────────────────────────────
 
 function ImageThumb({
   name,
@@ -268,7 +299,6 @@ function FileCard({
             ${dragging ? "opacity-40 scale-95" : "hover:-translate-y-0.5 hover:shadow-2xl hover:shadow-black/50"}`}
           onDoubleClick={() => onOpen(file.name)}
         >
-          {/* Preview area */}
           <div
             className="relative flex items-center justify-center overflow-hidden bg-[#1e1e1e]"
             style={{ height: 120 }}
@@ -290,15 +320,11 @@ function FileCard({
                 )}
               </div>
             )}
-
-            {/* AI similarity badge overlay */}
             {inAiMode && similarity !== undefined && (
               <div className="absolute top-1.5 right-1.5">
                 <SimilarityBadge score={similarity} />
               </div>
             )}
-
-            {/* Hover open overlay */}
             <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
               <button
                 onClick={(e) => {
@@ -312,7 +338,6 @@ function FileCard({
             </div>
           </div>
 
-          {/* Info bar */}
           <div className="px-2.5 py-2 flex flex-col gap-0.5">
             {renaming ? (
               <RenameInput
@@ -342,7 +367,6 @@ function FileCard({
             </p>
           </div>
 
-          {/* Three-dot menu on hover */}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
@@ -374,7 +398,6 @@ function FileCard({
           </DropdownMenu>
         </div>
       </ContextMenuTrigger>
-
       <ContextMenuContent>
         <ContextMenuItem onClick={() => onOpen(file.name)}>
           <ExternalLink size={13} className="mr-2" /> Open
@@ -448,7 +471,6 @@ function FolderCard({
         className="relative flex items-center justify-center bg-[#1e1e1e]"
         style={{ height: 120 }}
       >
-        {/* macOS-style folder SVG */}
         <svg
           width="72"
           height="60"
@@ -479,7 +501,6 @@ function FolderCard({
           </div>
         )}
       </div>
-
       <div className="px-2.5 py-2 flex flex-col gap-0.5">
         <p className="text-[11px] font-medium truncate leading-tight text-[#d4d4d4] text-center">
           {folder.name}
@@ -523,8 +544,8 @@ function FileRow({
 }) {
   const [renaming, setRenaming] = useState(false);
   const isImage = file.mime_type.startsWith("image/");
-  // Use size=16 directly — no cloneElement needed
   const { icon, color } = getIconMeta(file.mime_type, file.name, 16);
+  const typeLabel = getTypeLabel(file.mime_type, file.name);
 
   return (
     <ContextMenu>
@@ -532,15 +553,14 @@ function FileRow({
         <div
           draggable
           onDragStart={(e) => e.dataTransfer.setData("text/plain", file.name)}
-          className={`grid items-center gap-3 px-3 py-2 rounded-lg border transition-colors fade-in cursor-grab active:cursor-grabbing
+          className={`grid items-center gap-2 px-2 py-2 rounded-lg border transition-colors fade-in cursor-grab active:cursor-grabbing
             ${
               inAiMode && similarity !== undefined && similarity >= 0.5
                 ? "border-indigo-500/20 hover:bg-[#2a2a2e] hover:border-indigo-500/30"
                 : "border-transparent hover:bg-[#2a2a2e] hover:border-[#3e3e42]"
             }`}
-          style={{ gridTemplateColumns: "32px 1fr 80px 70px 100px 80px" }}
+          style={{ gridTemplateColumns: "32px 1fr 56px 70px 56px 80px" }}
         >
-          {/* Icon */}
           <div className="w-8 h-8 rounded-lg overflow-hidden bg-[#1e1e1e] flex items-center justify-center shrink-0">
             {isImage ? (
               <div className="w-full h-full relative">
@@ -553,7 +573,6 @@ function FileRow({
             )}
           </div>
 
-          {/* Name */}
           <div className="min-w-0">
             {renaming ? (
               <RenameInput
@@ -574,33 +593,37 @@ function FileRow({
             )}
           </div>
 
+          {/* Clean type label — no overflow */}
           <Badge
             variant="outline"
-            className="text-[9px] font-mono uppercase tracking-wide h-4 px-1.5 w-fit"
+            className="text-[9px] font-mono uppercase tracking-wide h-4 px-1.5 w-fit max-w-[54px] truncate"
           >
-            {file.mime_type.split("/")[1]?.split(";")[0] ?? "file"}
+            {typeLabel}
           </Badge>
 
-          <span className="text-[11px] font-mono text-[#6a6a6a]">
+          <span className="text-[11px] font-mono text-[#6a6a6a] whitespace-nowrap">
             {formatBytes(file.size)}
           </span>
 
-          {inAiMode && similarity !== undefined ? (
-            <SimilarityBadge score={similarity} />
-          ) : (
-            <span className="text-[11px] text-[#6a6a6a]">
-              {formatDate(file.updated_at)}
-            </span>
-          )}
+          {/* Fixed-width cell for match/date — no overflow */}
+          <div className="flex items-center min-w-0">
+            {inAiMode && similarity !== undefined ? (
+              <SimilarityBadge score={similarity} />
+            ) : (
+              <span className="text-[11px] text-[#6a6a6a] whitespace-nowrap">
+                {formatDate(file.updated_at)}
+              </span>
+            )}
+          </div>
 
-          <div className="flex items-center gap-0.5 justify-end">
+          <div className="flex items-center justify-end shrink-0">
             <Button
               variant="ghost"
               size="icon"
               className="w-6 h-6 text-[#6a6a6a] hover:text-[#d4d4d4]"
               onClick={() => onOpen(file.name)}
             >
-              <ExternalLink size={12} />
+              <ExternalLink size={11} />
             </Button>
             <Button
               variant="ghost"
@@ -608,7 +631,7 @@ function FileRow({
               className="w-6 h-6 text-[#6a6a6a] hover:text-indigo-400"
               onClick={() => onAskAi(file.name)}
             >
-              <Sparkles size={12} />
+              <Sparkles size={11} />
             </Button>
             <Button
               variant="ghost"
@@ -616,7 +639,7 @@ function FileRow({
               className="w-6 h-6 text-[#6a6a6a] hover:text-[#d4d4d4]"
               onClick={() => setRenaming(true)}
             >
-              <Pencil size={12} />
+              <Pencil size={11} />
             </Button>
             <Button
               variant="ghost"
@@ -624,12 +647,11 @@ function FileRow({
               className="w-6 h-6 text-[#6a6a6a] hover:text-destructive"
               onClick={() => onDelete(file.name)}
             >
-              <Trash2 size={12} />
+              <Trash2 size={11} />
             </Button>
           </div>
         </div>
       </ContextMenuTrigger>
-
       <ContextMenuContent>
         <ContextMenuItem onClick={() => onOpen(file.name)}>
           <ExternalLink size={13} className="mr-2" /> Open
@@ -701,7 +723,11 @@ export function FileArea({
     aiResults.map((r) => [r.file_name, r.similarity]),
   );
   const inAiMode = aiResults.length > 0;
-  const subfolders = folders.filter((f) => f.parent === currentFolder);
+
+  // Hide folders when AI search is active — only show ranked files
+  const subfolders = inAiMode
+    ? []
+    : folders.filter((f) => f.parent === currentFolder);
 
   const shared = {
     inAiMode,
@@ -717,7 +743,7 @@ export function FileArea({
 
   if (files.length === 0 && subfolders.length === 0) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center gap-3 p-16">
+      <div className="flex-1 flex flex-col items-center justify-center gap-3 p-16 overflow-hidden">
         <div className="w-16 h-16 rounded-2xl bg-[#252526] border border-[#3e3e42] flex items-center justify-center">
           <Package size={28} strokeWidth={1} className="text-[#3e3e42]" />
         </div>
@@ -733,26 +759,32 @@ export function FileArea({
 
   if (view === "list") {
     return (
-      <div className="flex flex-col flex-1 overflow-hidden">
+      // flex-1 + min-h-0 ensures this column can shrink and scroll
+      <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
         <div
           className="grid gap-3 px-3 py-2 border-b border-[#3e3e42] bg-[#1e1e1e] text-[10px] font-semibold uppercase tracking-widest text-[#4a4a4a] shrink-0"
-          style={{ gridTemplateColumns: "32px 1fr 80px 70px 100px 80px" }}
+          style={{
+            gridTemplateColumns: "32px minmax(0,1fr) 52px 62px 52px auto",
+          }}
         >
           <span />
           <span>Name</span>
           <span>Kind</span>
           <span>Size</span>
-          <span>{inAiMode ? "Match" : "Modified"}</span>
+          <span>{inAiMode ? "Match" : "Date"}</span>
           <span className="text-right">Actions</span>
         </div>
-        <ScrollArea className="flex-1">
+        {/* ScrollArea fills remaining space */}
+        <ScrollArea className="flex-1 min-h-0">
           <div className="px-2 py-1.5 flex flex-col gap-0.5">
             {subfolders.map((folder) => (
               <div
                 key={folder.path}
                 className="grid items-center gap-3 px-3 py-2 rounded-lg border border-transparent
                   hover:bg-[#2a2a2e] hover:border-[#3e3e42] transition-colors cursor-pointer"
-                style={{ gridTemplateColumns: "32px 1fr 80px 70px 100px 80px" }}
+                style={{
+                  gridTemplateColumns: "32px minmax(0,1fr) 52px 62px 52px auto",
+                }}
                 onDoubleClick={() => onNavigateFolder(folder.path)}
               >
                 <div className="w-8 h-8 flex items-center justify-center">
@@ -790,8 +822,9 @@ export function FileArea({
     );
   }
 
+  // Grid view — ScrollArea wraps everything
   return (
-    <ScrollArea className="flex-1">
+    <ScrollArea className="flex-1 min-h-0">
       <div
         className="p-4 grid gap-3"
         style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}
