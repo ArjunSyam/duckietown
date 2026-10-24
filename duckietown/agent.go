@@ -181,11 +181,16 @@ func (a *App) ChatWithAgent(message string, history []ChatMessage, fileName stri
 			}
 			switch event["type"] {
 			case "token":
-				wailsruntime.EventsEmit(a.ctx, "chat-token", map[string]string{
-					"content": event["content"].(string),
-				})
+				if content, ok := event["content"].(string); ok {
+					wailsruntime.EventsEmit(a.ctx, "chat-token", map[string]string{
+						"content": content,
+					})
+				}
 			case "sources":
 				wailsruntime.EventsEmit(a.ctx, "chat-sources", event["files"])
+			case "error":
+				wailsruntime.EventsEmit(a.ctx, "chat-error", event["content"])
+				return
 			}
 		}
 		wailsruntime.EventsEmit(a.ctx, "chat-done", nil)

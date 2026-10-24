@@ -1,7 +1,9 @@
 build/bin
+*.exe
 node_modules
 frontend/dist
 .env
+.env.local
 sidecar/.venv/
 sidecar/__pycache__/
 sidecar/dist/

@@ -27,7 +27,8 @@ type App struct {
 }
 
 func NewApp() *App {
-	godotenv.Load()
+	// .env.local (gitignored, real secrets) takes priority over .env (shared defaults)
+	godotenv.Load(".env.local", ".env")
 	return &App{
 		supaURL: os.Getenv("SUPABASE_URL"),
 		supaKey: os.Getenv("SUPABASE_KEY"),

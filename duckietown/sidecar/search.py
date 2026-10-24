@@ -349,6 +349,12 @@ async def chat(req: ChatRequest):
                     "temperature": 0.3,
                 },
             ) as response:
+                if response.status_code != 200:
+                    body = (await response.aread()).decode(errors="replace")
+                    print(f"[chat] OpenRouter error {response.status_code} for model {CHAT_MODEL}: {body}")
+                    yield f"data: {json.dumps({'type': 'error', 'content': f'OpenRouter error {response.status_code}: {body[:300]}'})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
                 async for line in response.aiter_lines():
                     if not line.startswith("data:"):
                         continue
@@ -358,11 +364,15 @@ async def chat(req: ChatRequest):
                         return
                     try:
                         chunk = json.loads(raw)
+                        if "error" in chunk:
+                            print(f"[chat] OpenRouter stream error: {chunk['error']}")
+                            yield f"data: {json.dumps({'type': 'error', 'content': str(chunk['error'])})}\n\n"
+                            continue
                         delta = chunk["choices"][0]["delta"].get("content", "")
                         if delta:
                             yield f"data: {json.dumps({'type': 'token', 'content': delta})}\n\n"
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[chat] Failed to parse stream line {raw!r}: {e}")
         yield "data: [DONE]\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
