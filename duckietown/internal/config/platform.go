@@ -1,4 +1,4 @@
-package main
+package config
 
 import (
 	"mime"
@@ -7,8 +7,8 @@ import (
 	goruntime "runtime"
 )
 
-// openPath opens any file or folder with the system default application
-func openPath(path string) error {
+// OpenPath opens any file, folder, or URL with the system default application.
+func OpenPath(path string) error {
 	switch goruntime.GOOS {
 	case "windows":
 		return exec.Command("cmd", "/c", "start", "", path).Start()
@@ -19,8 +19,8 @@ func openPath(path string) error {
 	}
 }
 
-// getMimeType returns the correct MIME type for a filename
-func getMimeType(fileName string) string {
+// MimeType returns the correct MIME type for a filename.
+func MimeType(fileName string) string {
 	mime.AddExtensionType(".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
 	mime.AddExtensionType(".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 	mime.AddExtensionType(".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation")

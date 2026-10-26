@@ -1,4 +1,6 @@
-package main
+// Package sidecar manages the Python FastAPI sidecar process (ingest +
+// search/chat) and the HTTP calls Go makes to it for ingestion.
+package sidecar
 
 import (
 	"fmt"
@@ -12,7 +14,9 @@ import (
 
 var sidecarCmd *exec.Cmd
 
-func (a *App) startSidecar() error {
+// Start launches the Python sidecar (bundled binary if present, otherwise
+// the dev script via its venv) and blocks until it reports healthy.
+func Start() error {
 	// Kill any leftover sidecar from a previous dev session on this port
 	killProcessOnPort(8000)
 	time.Sleep(300 * time.Millisecond)
@@ -78,12 +82,21 @@ func (a *App) startSidecar() error {
 	sidecarCmd = cmd
 	fmt.Printf("🐍 Sidecar PID: %d\n", cmd.Process.Pid)
 
-	if err := waitForSidecar("http://127.0.0.1:8000/health", 60); err != nil {
+	if err := waitForSidecar(BaseURL+"/health", 60); err != nil {
 		cmd.Process.Kill()
 		return fmt.Errorf("sidecar did not become healthy: %w", err)
 	}
 	fmt.Println("✅ Sidecar ready")
 	return nil
+}
+
+// Stop kills the sidecar process, if running.
+func Stop() {
+	if sidecarCmd != nil && sidecarCmd.Process != nil {
+		fmt.Println("🛑 Stopping sidecar...")
+		sidecarCmd.Process.Kill()
+		sidecarCmd.Wait()
+	}
 }
 
 // killProcessOnPort kills whatever process is holding the given port.
@@ -137,14 +150,6 @@ func waitForSidecar(url string, timeoutSecs int) error {
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("timeout after %ds — check sidecar output above for errors", timeoutSecs)
-}
-
-func stopSidecar() {
-	if sidecarCmd != nil && sidecarCmd.Process != nil {
-		fmt.Println("🛑 Stopping sidecar...")
-		sidecarCmd.Process.Kill()
-		sidecarCmd.Wait()
-	}
 }
 
 func userDataDir() string {

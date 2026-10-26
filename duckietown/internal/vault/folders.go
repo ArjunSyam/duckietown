@@ -1,4 +1,4 @@
-package main
+package vault
 
 import (
 	"fmt"
@@ -17,23 +17,23 @@ type FolderRecord struct {
 	Children int    `json:"children"`
 }
 
-func (a *App) ListFolders() ([]FolderRecord, error) {
-	if a.vaultPath == "" {
+func (s *Service) ListFolders() ([]FolderRecord, error) {
+	if s.Path == "" {
 		return nil, nil
 	}
 	var folders []FolderRecord
-	err := filepath.WalkDir(a.vaultPath, func(path string, d os.DirEntry, err error) error {
+	err := filepath.WalkDir(s.Path, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
-		if !d.IsDir() || path == a.vaultPath {
+		if !d.IsDir() || path == s.Path {
 			return nil
 		}
 		name := d.Name()
 		if strings.HasPrefix(name, ".") {
 			return filepath.SkipDir
 		}
-		rel, _ := filepath.Rel(a.vaultPath, path)
+		rel, _ := filepath.Rel(s.Path, path)
 		rel = filepath.ToSlash(rel)
 		parent := filepath.ToSlash(filepath.Dir(rel))
 		if parent == "." {
@@ -63,29 +63,29 @@ func (a *App) ListFolders() ([]FolderRecord, error) {
 	return folders, nil
 }
 
-func (a *App) CreateFolder(relativePath string) error {
-	if a.vaultPath == "" {
+func (s *Service) CreateFolder(relativePath string) error {
+	if s.Path == "" {
 		return fmt.Errorf("no vault path set")
 	}
 	relativePath = filepath.ToSlash(filepath.Clean(relativePath))
 	if relativePath == "." || relativePath == "" {
 		return fmt.Errorf("invalid folder path")
 	}
-	absPath := filepath.Join(a.vaultPath, filepath.FromSlash(relativePath))
+	absPath := filepath.Join(s.Path, filepath.FromSlash(relativePath))
 	if err := os.MkdirAll(absPath, 0755); err != nil {
 		return fmt.Errorf("could not create folder: %w", err)
 	}
-	wailsruntime.EventsEmit(a.ctx, "folder-created", relativePath)
+	wailsruntime.EventsEmit(s.ctx, "folder-created", relativePath)
 	fmt.Printf("📁 Created folder: %s\n", relativePath)
 	return nil
 }
 
-func (a *App) DeleteFolder(relativePath string) error {
-	if a.vaultPath == "" {
+func (s *Service) DeleteFolder(relativePath string) error {
+	if s.Path == "" {
 		return fmt.Errorf("no vault path set")
 	}
 	relativePath = filepath.ToSlash(filepath.Clean(relativePath))
-	absPath := filepath.Join(a.vaultPath, filepath.FromSlash(relativePath))
+	absPath := filepath.Join(s.Path, filepath.FromSlash(relativePath))
 
 	// Collect all files before deletion
 	var filePaths []struct{ abs, name, folder string }
@@ -97,7 +97,7 @@ func (a *App) DeleteFolder(relativePath string) error {
 		if shouldSkipFile(name) {
 			return nil
 		}
-		rel, _ := filepath.Rel(a.vaultPath, p)
+		rel, _ := filepath.Rel(s.Path, p)
 		rel = filepath.ToSlash(rel)
 		folder := filepath.ToSlash(filepath.Dir(rel))
 		if folder == "." {
@@ -113,22 +113,22 @@ func (a *App) DeleteFolder(relativePath string) error {
 
 	// Clean Supabase and ChromaDB for each file
 	for _, f := range filePaths {
-		a.supaDeleteStorageFile(f.name, f.folder)
-		a.supaDeleteFileRecord(f.name)
-		go a.DeleteFileEmbeddings(f.name) // always clean up embeddings
+		s.Supa.DeleteStorageFile(f.name, f.folder)
+		s.Supa.DeleteFileRecord(f.name)
+		go s.Sidecar.DeleteFileEmbeddings(f.name) // always clean up embeddings
 	}
 
-	wailsruntime.EventsEmit(a.ctx, "folder-deleted", relativePath)
+	wailsruntime.EventsEmit(s.ctx, "folder-deleted", relativePath)
 	fmt.Printf("🗑 Deleted folder: %s\n", relativePath)
 	return nil
 }
 
-func (a *App) MoveFileToFolder(fileName, targetFolderPath string) error {
-	if a.vaultPath == "" {
+func (s *Service) MoveFileToFolder(fileName, targetFolderPath string) error {
+	if s.Path == "" {
 		return fmt.Errorf("no vault path set")
 	}
 
-	currentPath, currentFolder, err := a.findFileInVault(fileName)
+	currentPath, currentFolder, err := s.FindFileInVault(fileName)
 	if err != nil {
 		return fmt.Errorf("file not found in vault: %w", err)
 	}
@@ -138,9 +138,9 @@ func (a *App) MoveFileToFolder(fileName, targetFolderPath string) error {
 
 	var destDir string
 	if targetFolderPath == "" {
-		destDir = a.vaultPath
+		destDir = s.Path
 	} else {
-		destDir = filepath.Join(a.vaultPath, filepath.FromSlash(targetFolderPath))
+		destDir = filepath.Join(s.Path, filepath.FromSlash(targetFolderPath))
 	}
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("could not create destination: %w", err)
@@ -155,33 +155,33 @@ func (a *App) MoveFileToFolder(fileName, targetFolderPath string) error {
 		return fmt.Errorf("could not move file: %w", err)
 	}
 
-	newSP := a.storagePath(fileName, targetFolderPath)
+	newSP := s.Supa.StoragePath(fileName, targetFolderPath)
 	go func() {
-		a.supaUploadFile(destPath, fileName, targetFolderPath)
-		a.supaDeleteStorageFile(fileName, currentFolder)
-		a.supaUpdateFileFolderPath(fileName, targetFolderPath, newSP)
+		s.Supa.UploadFile(destPath, fileName, targetFolderPath)
+		s.Supa.DeleteStorageFile(fileName, currentFolder)
+		s.Supa.UpdateFileFolderPath(fileName, targetFolderPath, newSP)
 		// Update ChromaDB metadata only — NO re-embedding
-		a.MoveFileEmbeddings(fileName, fileName)
+		s.Sidecar.MoveFileEmbeddings(fileName, fileName)
 	}()
 
-	wailsruntime.EventsEmit(a.ctx, "file-moved", map[string]string{
+	wailsruntime.EventsEmit(s.ctx, "file-moved", map[string]string{
 		"file_name":   fileName,
 		"from_folder": currentFolder,
 		"to_folder":   targetFolderPath,
 	})
 	// Emit file-uploaded to dismiss any lingering syncing toast
-	wailsruntime.EventsEmit(a.ctx, "file-uploaded", fileName)
+	wailsruntime.EventsEmit(s.ctx, "file-uploaded", fileName)
 	return nil
 }
 
-func (a *App) findFileInVault(fileName string) (absPath, folderPath string, err error) {
-	err = filepath.WalkDir(a.vaultPath, func(p string, d os.DirEntry, e error) error {
+func (s *Service) FindFileInVault(fileName string) (absPath, folderPath string, err error) {
+	err = filepath.WalkDir(s.Path, func(p string, d os.DirEntry, e error) error {
 		if e != nil || d.IsDir() {
 			return nil
 		}
 		if d.Name() == fileName {
 			absPath = p
-			rel, _ := filepath.Rel(a.vaultPath, filepath.Dir(p))
+			rel, _ := filepath.Rel(s.Path, filepath.Dir(p))
 			rel = filepath.ToSlash(rel)
 			if rel == "." {
 				rel = ""
@@ -197,9 +197,9 @@ func (a *App) findFileInVault(fileName string) (absPath, folderPath string, err 
 	return
 }
 
-func (a *App) folderPathForFile(absFilePath string) string {
+func (s *Service) folderPathForFile(absFilePath string) string {
 	dir := filepath.Dir(absFilePath)
-	rel, err := filepath.Rel(a.vaultPath, dir)
+	rel, err := filepath.Rel(s.Path, dir)
 	if err != nil {
 		return ""
 	}
@@ -208,4 +208,58 @@ func (a *App) folderPathForFile(absFilePath string) string {
 		return ""
 	}
 	return rel
+}
+
+// ── Scan-by-type (used by the organize flow) ────────────────────────────
+
+var imageExts = map[string]bool{
+	".jpg": true, ".jpeg": true, ".png": true, ".gif": true,
+	".webp": true, ".bmp": true, ".svg": true, ".heic": true, ".tiff": true,
+}
+var audioExts = map[string]bool{
+	".mp3": true, ".wav": true, ".aac": true, ".flac": true,
+	".ogg": true, ".m4a": true, ".wma": true,
+}
+var videoExts = map[string]bool{
+	".mp4": true, ".mov": true, ".avi": true, ".mkv": true,
+	".webm": true, ".wmv": true, ".m4v": true,
+}
+var textExts = map[string]bool{
+	".pdf": true, ".doc": true, ".docx": true, ".txt": true,
+	".md": true, ".xlsx": true, ".xls": true, ".csv": true,
+	".pptx": true, ".ppt": true, ".rtf": true,
+}
+
+// FindFilesByType scans the entire vault and returns filenames matching a modality.
+func (s *Service) FindFilesByType(typeFilter string) []string {
+	var extMap map[string]bool
+	switch typeFilter {
+	case "image":
+		extMap = imageExts
+	case "audio":
+		extMap = audioExts
+	case "video":
+		extMap = videoExts
+	case "text":
+		extMap = textExts
+	default:
+		return nil
+	}
+
+	var names []string
+	filepath.WalkDir(s.Path, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if shouldSkipFile(name) {
+			return nil
+		}
+		ext := strings.ToLower(filepath.Ext(name))
+		if extMap[ext] {
+			names = append(names, name)
+		}
+		return nil
+	})
+	return names
 }

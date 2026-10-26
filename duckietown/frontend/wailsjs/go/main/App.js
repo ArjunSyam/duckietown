@@ -14,12 +14,12 @@ export function DeleteFile(arg1) {
   return window['go']['main']['App']['DeleteFile'](arg1);
 }
 
-export function DeleteFileEmbeddings(arg1) {
-  return window['go']['main']['App']['DeleteFileEmbeddings'](arg1);
-}
-
 export function DeleteFolder(arg1) {
   return window['go']['main']['App']['DeleteFolder'](arg1);
+}
+
+export function GetChatModel() {
+  return window['go']['main']['App']['GetChatModel']();
 }
 
 export function GetCurrentUser() {
@@ -30,16 +30,8 @@ export function GetFilePreview(arg1) {
   return window['go']['main']['App']['GetFilePreview'](arg1);
 }
 
-export function GetIndexedFiles() {
-  return window['go']['main']['App']['GetIndexedFiles']();
-}
-
 export function GetVaultPath() {
   return window['go']['main']['App']['GetVaultPath']();
-}
-
-export function IngestFile(arg1, arg2) {
-  return window['go']['main']['App']['IngestFile'](arg1, arg2);
 }
 
 export function ListFiles() {
@@ -48,10 +40,6 @@ export function ListFiles() {
 
 export function ListFolders() {
   return window['go']['main']['App']['ListFolders']();
-}
-
-export function MoveFileEmbeddings(arg1, arg2) {
-  return window['go']['main']['App']['MoveFileEmbeddings'](arg1, arg2);
 }
 
 export function MoveFileToFolder(arg1, arg2) {

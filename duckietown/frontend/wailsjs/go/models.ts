@@ -1,4 +1,4 @@
-export namespace main {
+export namespace agent {
 	
 	export class ChatMessage {
 	    role: string;
@@ -12,50 +12,6 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.role = source["role"];
 	        this.content = source["content"];
-	    }
-	}
-	export class FileRecord {
-	    id: string;
-	    name: string;
-	    size: number;
-	    mime_type: string;
-	    folder_path: string;
-	    created_at: string;
-	    updated_at: string;
-	    storage_path: string;
-	
-	    static createFrom(source: any = {}) {
-	        return new FileRecord(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.name = source["name"];
-	        this.size = source["size"];
-	        this.mime_type = source["mime_type"];
-	        this.folder_path = source["folder_path"];
-	        this.created_at = source["created_at"];
-	        this.updated_at = source["updated_at"];
-	        this.storage_path = source["storage_path"];
-	    }
-	}
-	export class FolderRecord {
-	    path: string;
-	    name: string;
-	    parent: string;
-	    children: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new FolderRecord(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.path = source["path"];
-	        this.name = source["name"];
-	        this.parent = source["parent"];
-	        this.children = source["children"];
 	    }
 	}
 	export class OrganiseFolderResult {
@@ -114,6 +70,60 @@ export namespace main {
 	        this.snippet = source["snippet"];
 	        this.modality = source["modality"];
 	        this.page = source["page"];
+	    }
+	}
+
+}
+
+export namespace supabase {
+	
+	export class FileRecord {
+	    id: string;
+	    name: string;
+	    size: number;
+	    mime_type: string;
+	    folder_path: string;
+	    created_at: string;
+	    updated_at: string;
+	    storage_path: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new FileRecord(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.name = source["name"];
+	        this.size = source["size"];
+	        this.mime_type = source["mime_type"];
+	        this.folder_path = source["folder_path"];
+	        this.created_at = source["created_at"];
+	        this.updated_at = source["updated_at"];
+	        this.storage_path = source["storage_path"];
+	    }
+	}
+
+}
+
+export namespace vault {
+	
+	export class FolderRecord {
+	    path: string;
+	    name: string;
+	    parent: string;
+	    children: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new FolderRecord(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.path = source["path"];
+	        this.name = source["name"];
+	        this.parent = source["parent"];
+	        this.children = source["children"];
 	    }
 	}
 
