@@ -13,6 +13,7 @@ import {
   GetCurrentUser,
   SemanticSearch,
   ChatWithAgent,
+  GetChatModel,
   ListFolders,
   CreateFolder,
   DeleteFolder,
@@ -21,7 +22,7 @@ import {
   ParseOrganiseIntent,
 } from "../../wailsjs/go/main/App";
 
-import { EventsOn, EventsOff } from "../../wailsjs/runtime/runtime";
+import { EventsOn, EventsOff, BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 
 import type { SearchResult, FolderRecord, OrganiseResult } from "../types";
 
@@ -79,6 +80,9 @@ export const wails = {
   parseOrganiseIntent: (message: string): Promise<OrganiseIntent> =>
     ParseOrganiseIntent(message),
 
+  // AI — the OpenRouter model id actually in use for chat
+  getChatModel: (): Promise<string> => GetChatModel(),
+
   // AI — folder organisation
   // typeFilter: "image" | "text" | "audio" | "video" | ""
   organiseFolder: (
@@ -92,4 +96,7 @@ export const wails = {
   // Events
   on: EventsOn,
   off: EventsOff,
+
+  // Open a URL in the system browser instead of inside the Wails window
+  openExternal: (url: string): void => BrowserOpenURL(url),
 };

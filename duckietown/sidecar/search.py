@@ -37,6 +37,14 @@ router = APIRouter()
 
 CHAT_MODEL = os.environ.get("OPENROUTER_MODEL", "google/gemma-3-27b-it")
 
+
+@router.get("/model")
+def get_chat_model():
+    """Returns the OpenRouter model id actually used for chat, so the
+    frontend can show the real model instead of a hardcoded label."""
+    return {"model": CHAT_MODEL}
+
+
 SIMILARITY_THRESHOLD = 0.7
 TOP_K_DEFAULT = 50
 TOP_FALLBACK = 3

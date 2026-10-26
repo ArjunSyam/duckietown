@@ -214,6 +214,12 @@ export function MainScreen({
     setAiTargetFile(null);
   };
 
+  // Clears just the file context — keeps the panel open and the
+  // conversation intact, switches back to asking about the whole vault.
+  const clearAiTargetFile = () => {
+    setAiTargetFile(null);
+  };
+
   const navigateFolder = (path: string) => {
     setCurrentFolder(path);
     setAiResults([]);
@@ -314,6 +320,7 @@ export function MainScreen({
             targetFile={aiTargetFile}
             sessionKey={aiSessionKey}
             currentFolder={currentFolder}
+            onClearTargetFile={clearAiTargetFile}
           />
         )}
       </div>

@@ -16,7 +16,13 @@ function ScrollArea({
     >
       <ScrollAreaPrimitive.Viewport
         data-slot="scroll-area-viewport"
-        className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1"
+        // Radix renders its content wrapper as `display:table;min-width:100%`
+        // inline, which sizes to fit content instead of the viewport — any
+        // percentage max-width inside (e.g. chat bubbles) grows with it
+        // instead of being clamped, and the overflow gets silently clipped
+        // by whatever ancestor has overflow-hidden. Force it back to a
+        // normal block box so width constraints behave.
+        className="size-full rounded-[inherit] transition-[color,box-shadow] outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-1 [&>div]:!block"
       >
         {children}
       </ScrollAreaPrimitive.Viewport>
