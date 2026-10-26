@@ -1,2 +1,43 @@
+# Secrets / local notes
 supabase.txt
-ARCHITECTURAL_BLUEPRINT.md
+
+# Go backend (duckietown/)
+duckietown/build/bin
+*.exe
+.env
+.env.local
+duckietown/sidecar/.venv/
+duckietown/sidecar/__pycache__/
+duckietown/sidecar/dist/
+duckietown/sidecar/build/
+duckietown/sidecar/ImageBind/
+
+# Node / frontend (duckietown/frontend/)
+node_modules
+dist
+dist-ssr
+*.local
+package.json.md5
+
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor / OS
+duckietown/frontend/.vscode/*
+!duckietown/frontend/.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local screenshots (never committed)
+screenshots/
