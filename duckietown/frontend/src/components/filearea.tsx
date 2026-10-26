@@ -1,22 +1,13 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import {
-  FileText,
-  FileType,
-  Image,
-  Video,
-  Music,
-  Package,
-  FileSpreadsheet,
-  Archive,
   ExternalLink,
   Trash2,
   Pencil,
   MoreHorizontal,
   Sparkles,
-  Folder,
+  Package,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Input } from "@/components/ui/input";
 import {
@@ -49,83 +40,12 @@ import type {
   FolderRecord,
 } from "../types";
 import { formatBytes, formatDate } from "../lib/utils";
+import { FileTypeIcon, isImageType, kindLabel } from "../lib/filetypes";
+import { vaultFileUrl } from "../lib/vaultfile";
 
-// ── File type helpers ──────────────────────────────────
-
-function getIconMeta(
-  mime: string,
-  name: string,
-  size = 28,
-): { icon: React.ReactNode; color: string; label: string } {
-  const p = { size, strokeWidth: 1.4 };
-  if (mime.startsWith("image/"))
-    return { icon: <Image {...p} />, color: "#7dd3fc", label: "Image" };
-  if (mime.startsWith("video/"))
-    return { icon: <Video {...p} />, color: "#a78bfa", label: "Video" };
-  if (mime.startsWith("audio/"))
-    return { icon: <Music {...p} />, color: "#34d399", label: "Audio" };
-  if (mime.includes("pdf"))
-    return { icon: <FileText {...p} />, color: "#f87171", label: "PDF" };
-  if (
-    mime.includes("wordprocessingml") ||
-    mime.includes("msword") ||
-    name.endsWith(".docx") ||
-    name.endsWith(".doc")
-  )
-    return { icon: <FileType {...p} />, color: "#60a5fa", label: "Word" };
-  if (
-    mime.includes("spreadsheetml") ||
-    mime.includes("ms-excel") ||
-    name.endsWith(".xlsx") ||
-    name.endsWith(".csv")
-  )
-    return {
-      icon: <FileSpreadsheet {...p} />,
-      color: "#4ade80",
-      label: "Sheet",
-    };
-  if (
-    mime.includes("zip") ||
-    mime.includes("tar") ||
-    name.endsWith(".zip") ||
-    name.endsWith(".rar")
-  )
-    return { icon: <Archive {...p} />, color: "#fbbf24", label: "Archive" };
-  if (mime.includes("text") || name.endsWith(".txt") || name.endsWith(".md"))
-    return { icon: <FileText {...p} />, color: "#94a3b8", label: "Text" };
-  return { icon: <Package {...p} />, color: "#6b7280", label: "File" };
-}
-
-// Clean readable type label from mime or filename
-function getTypeLabel(mime: string, name: string): string {
-  const ext = name.split(".").pop()?.toUpperCase();
-  if (mime.startsWith("image/")) return ext ?? "Image";
-  if (mime.startsWith("video/")) return ext ?? "Video";
-  if (mime.startsWith("audio/")) return ext ?? "Audio";
-  if (mime.includes("pdf")) return "PDF";
-  if (
-    mime.includes("wordprocessingml") ||
-    mime.includes("msword") ||
-    name.endsWith(".docx") ||
-    name.endsWith(".doc")
-  )
-    return "DOCX";
-  if (
-    mime.includes("spreadsheetml") ||
-    mime.includes("ms-excel") ||
-    name.endsWith(".xlsx")
-  )
-    return "XLSX";
-  if (name.endsWith(".csv")) return "CSV";
-  if (mime.includes("zip") || mime.includes("tar") || name.endsWith(".zip"))
-    return "ZIP";
-  if (name.endsWith(".rar")) return "RAR";
-  if (mime.includes("text/plain") || name.endsWith(".txt")) return "TXT";
-  if (name.endsWith(".md")) return "MD";
-  // Fallback: use file extension if available
-  if (ext && ext.length <= 5) return ext;
-  return "File";
-}
+// Shared column template — used by the list header AND every row (file and
+// folder) so they can never drift out of alignment with each other.
+const LIST_GRID_COLUMNS = "32px minmax(0,1fr) 150px 72px 92px 116px";
 
 // ── Similarity badge ───────────────────────────────────
 
@@ -139,7 +59,7 @@ function SimilarityBadge({ score }: { score: number }) {
         : "text-[#6a6a6a] border-[#3e3e42]";
   return (
     <span
-      className={`text-[9px] font-mono border rounded px-1 py-0.5 whitespace-nowrap ${color}`}
+      className={`text-[9px] font-mono border rounded px-1 py-0.5 whitespace-nowrap bg-[#1a1a1a] ${color}`}
     >
       {pct}%
     </span>
@@ -174,46 +94,60 @@ function RenameInput({
   );
 }
 
-// ── Image thumbnail ────────────────────────────────────
+// ── Image thumbnail — renders the file's own content, like Explorer does,
+// not a generic icon. Points straight at the local vault file (served by
+// the Go backend, see internal/vault/httpserve.go) so the common case
+// costs zero network calls and zero IPC — no signed-URL round trip, no
+// base64 inflation, just a normal <img> load the webview caches like any
+// other asset. Only touches onGetPreview's Supabase signed URL as a
+// fallback for a file not yet present locally, and the file-type icon as
+// the last resort if neither works. Never silently blank. ─────────────
 
 function ImageThumb({
-  name,
+  file,
   onGetPreview,
+  size = 32,
 }: {
-  name: string;
+  file: { name: string; folder_path: string; mime_type: string };
   onGetPreview: (n: string) => Promise<string>;
+  size?: number;
 }) {
-  const [url, setUrl] = useState("");
-  const [error, setError] = useState(false);
+  const [stage, setStage] = useState<"local" | "remote" | "error">("local");
+  const [remoteUrl, setRemoteUrl] = useState("");
   const [loaded, setLoaded] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    onGetPreview(name)
+  const tryRemote = () => {
+    setLoaded(false);
+    onGetPreview(file.name)
       .then((u) => {
-        if (!cancelled) setUrl(u);
+        setRemoteUrl(u);
+        setStage("remote");
       })
-      .catch(() => setError(true));
-    return () => {
-      cancelled = true;
-    };
-  }, [name, onGetPreview]);
+      .catch(() => setStage("error"));
+  };
 
-  if (error || !url) return null;
+  if (stage === "error") {
+    return <FileTypeIcon name={file.name} mime={file.mime_type} size={size} />;
+  }
+
+  const src = stage === "local" ? vaultFileUrl(file.name, file.folder_path) : remoteUrl;
+
   return (
-    <>
+    <div className="relative w-full h-full flex items-center justify-center overflow-hidden rounded-[inherit]">
       {!loaded && (
-        <div className="absolute inset-0 bg-[#2a2a2a] animate-pulse" />
+        <div className="absolute inset-0 bg-[#2a2a2a] animate-pulse rounded-[inherit]" />
       )}
-      <img
-        src={url}
-        alt={name}
-        className={`w-full h-full object-cover transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
-        loading="lazy"
-        onLoad={() => setLoaded(true)}
-        onError={() => setError(true)}
-      />
-    </>
+      {src && (
+        <img
+          src={src}
+          alt={file.name}
+          className={`w-full h-full object-cover transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
+          loading="lazy"
+          onLoad={() => setLoaded(true)}
+          onError={stage === "local" ? tryRemote : () => setStage("error")}
+        />
+      )}
+    </div>
   );
 }
 
@@ -238,7 +172,7 @@ function MoveToMenu({
     <>
       {options.map((opt) => (
         <ContextMenuItem key={opt.path} onClick={() => onMove(opt.path)}>
-          <Folder size={12} className="mr-2 text-indigo-400/70" />
+          <FileTypeIcon folder size={12} className="mr-2" />
           {opt.label}
         </ContextMenuItem>
       ))}
@@ -246,14 +180,16 @@ function MoveToMenu({
   );
 }
 
-// ── macOS-style File Card (grid) ───────────────────────
+// ── Grid tile (Explorer "large icons" style) ───────────
 
-function FileCard({
+function FileTile({
   file,
   similarity,
   inAiMode,
   folders,
   currentFolder,
+  selected,
+  onSelect,
   onDelete,
   onRename,
   onOpen,
@@ -266,6 +202,8 @@ function FileCard({
   inAiMode: boolean;
   folders: FolderRecord[];
   currentFolder: string;
+  selected: boolean;
+  onSelect: () => void;
   onDelete: (n: string) => void;
   onRename: (old: string, n: string) => void;
   onOpen: (n: string) => void;
@@ -275,9 +213,7 @@ function FileCard({
 }) {
   const [renaming, setRenaming] = useState(false);
   const [dragging, setDragging] = useState(false);
-  const isImage = file.mime_type.startsWith("image/");
-  const { icon, color } = getIconMeta(file.mime_type, file.name);
-  const ext = file.name.split(".").pop()?.toUpperCase() ?? "";
+  const isImage = isImageType(file.mime_type, file.name);
 
   return (
     <ContextMenu>
@@ -289,92 +225,62 @@ function FileCard({
             setDragging(true);
           }}
           onDragEnd={() => setDragging(false)}
-          className={`group relative flex flex-col rounded-xl overflow-hidden cursor-pointer select-none
-            border transition-all duration-150 fade-in
-            ${
-              inAiMode && similarity !== undefined && similarity >= 0.5
-                ? "border-indigo-500/40 bg-[#252526]"
-                : "border-[#323236] bg-[#252526] hover:border-[#484850]"
-            }
-            ${dragging ? "opacity-40 scale-95" : "hover:-translate-y-0.5 hover:shadow-2xl hover:shadow-black/50"}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onSelect();
+          }}
           onDoubleClick={() => onOpen(file.name)}
+          className={`group relative flex flex-col items-center gap-1.5 rounded-md p-2.5 cursor-pointer select-none
+            transition-colors duration-150 fade-in
+            ${selected ? "bg-indigo-500/15 hover:bg-indigo-500/20" : "hover:bg-white/[0.06]"}
+            ${dragging ? "opacity-40" : ""}
+            ${inAiMode && similarity !== undefined && similarity >= 0.5 ? "ring-1 ring-indigo-500/40" : ""}`}
         >
-          <div
-            className="relative flex items-center justify-center overflow-hidden bg-[#1e1e1e]"
-            style={{ height: 120 }}
-          >
+          <div className="relative flex items-center justify-center w-16 h-16 shrink-0">
             {isImage ? (
-              <ImageThumb name={file.name} onGetPreview={onGetPreview} />
+              <ImageThumb file={file} onGetPreview={onGetPreview} size={64} />
             ) : (
-              <div className="flex flex-col items-center justify-center gap-2 w-full h-full">
-                <div style={{ color }} className="opacity-90">
-                  {icon}
-                </div>
-                {ext && (
-                  <span
-                    className="text-[9px] font-bold uppercase tracking-widest px-2 py-0.5 rounded"
-                    style={{ color, backgroundColor: `${color}18` }}
-                  >
-                    {ext}
-                  </span>
-                )}
-              </div>
+              <FileTypeIcon name={file.name} mime={file.mime_type} size={56} />
             )}
             {inAiMode && similarity !== undefined && (
-              <div className="absolute top-1.5 right-1.5">
+              <div className="absolute -top-1 -right-1">
                 <SimilarityBadge score={similarity} />
               </div>
             )}
-            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors flex items-center justify-center opacity-0 group-hover:opacity-100">
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onOpen(file.name);
-                }}
-                className="bg-white/10 backdrop-blur-sm border border-white/20 rounded-lg px-3 py-1.5 text-[11px] text-white font-medium"
-              >
-                Open
-              </button>
-            </div>
           </div>
 
-          <div className="px-2.5 py-2 flex flex-col gap-0.5">
-            {renaming ? (
-              <RenameInput
-                name={file.name}
-                onConfirm={(n) => {
-                  setRenaming(false);
-                  if (n && n !== file.name) onRename(file.name, n);
-                }}
-                onCancel={() => setRenaming(false)}
-              />
-            ) : (
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <p className="text-[11px] font-medium truncate leading-tight text-[#d4d4d4] text-center">
-                      {file.name}
-                    </p>
-                  </TooltipTrigger>
-                  <TooltipContent className="text-xs font-mono">
+          {renaming ? (
+            <RenameInput
+              name={file.name}
+              onConfirm={(n) => {
+                setRenaming(false);
+                if (n && n !== file.name) onRename(file.name, n);
+              }}
+              onCancel={() => setRenaming(false)}
+            />
+          ) : (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <p className="text-[11px] leading-tight text-[#d4d4d4] text-center line-clamp-2 break-words px-0.5 w-full">
                     {file.name}
-                  </TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            )}
-            <p className="text-[10px] font-mono text-[#4a4a4a] text-center">
-              {formatBytes(file.size)}
-            </p>
-          </div>
+                  </p>
+                </TooltipTrigger>
+                <TooltipContent className="text-xs font-mono max-w-xs break-all">
+                  {file.name}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
-                className="absolute top-1.5 left-1.5 w-6 h-6 rounded-md bg-black/40 backdrop-blur-sm
+                className="absolute top-1 right-1 w-5 h-5 rounded-md bg-black/40 backdrop-blur-sm
                   flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
                 onClick={(e) => e.stopPropagation()}
               >
-                <MoreHorizontal size={12} className="text-white" />
+                <MoreHorizontal size={11} className="text-white" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" className="text-xs">
@@ -410,7 +316,7 @@ function FileCard({
         </ContextMenuItem>
         <ContextMenuSub>
           <ContextMenuSubTrigger>
-            <Folder size={13} className="mr-2" /> Move to
+            <FileTypeIcon folder size={13} className="mr-2" /> Move to
           </ContextMenuSubTrigger>
           <ContextMenuSubContent>
             <MoveToMenu
@@ -432,14 +338,16 @@ function FileCard({
   );
 }
 
-// ── macOS-style Folder Card ────────────────────────────
-
-function FolderCard({
+function FolderTile({
   folder,
+  selected,
+  onSelect,
   onOpen,
   onDrop,
 }: {
   folder: FolderRecord;
+  selected: boolean;
+  onSelect: () => void;
   onOpen: (path: string) => void;
   onDrop: (fileName: string, folderPath: string) => void;
 }) {
@@ -447,13 +355,19 @@ function FolderCard({
 
   return (
     <div
-      className={`group relative flex flex-col rounded-xl overflow-hidden cursor-pointer select-none
-        border transition-all duration-150 fade-in
+      className={`group relative flex flex-col items-center gap-1.5 rounded-md p-2.5 cursor-pointer select-none
+        transition-colors duration-150 fade-in
         ${
           dragOver
-            ? "border-indigo-500/60 bg-indigo-500/10 scale-105"
-            : "border-[#323236] bg-[#252526] hover:border-[#484850] hover:-translate-y-0.5 hover:shadow-2xl hover:shadow-black/50"
+            ? "bg-indigo-500/15 ring-1 ring-indigo-500/40"
+            : selected
+              ? "bg-indigo-500/15 hover:bg-indigo-500/20"
+              : "hover:bg-white/[0.06]"
         }`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onSelect();
+      }}
       onDoubleClick={() => onOpen(folder.path)}
       onDragOver={(e) => {
         e.preventDefault();
@@ -467,50 +381,12 @@ function FolderCard({
         if (fileName) onDrop(fileName, folder.path);
       }}
     >
-      <div
-        className="relative flex items-center justify-center bg-[#1e1e1e]"
-        style={{ height: 120 }}
-      >
-        <svg
-          width="72"
-          height="60"
-          viewBox="0 0 72 60"
-          fill="none"
-          xmlns="http://www.w3.org/2000/svg"
-        >
-          <path
-            d="M4 14C4 11.2386 6.23858 9 9 9H28L34 16H63C65.7614 16 68 18.2386 68 21V52C68 54.7614 65.7614 57 63 57H9C6.23858 57 4 54.7614 4 52V14Z"
-            fill="#4a7fcb"
-            opacity="0.85"
-          />
-          <path
-            d="M4 22C4 19.2386 6.23858 17 9 17H63C65.7614 17 68 19.2386 68 22V52C68 54.7614 65.7614 57 63 57H9C6.23858 57 4 54.7614 4 52V22Z"
-            fill="#5b8fd9"
-          />
-          <path
-            d="M4 22C4 19.2386 6.23858 17 9 17H63C65.7614 17 68 19.2386 68 22V28H4V22Z"
-            fill="white"
-            opacity="0.08"
-          />
-        </svg>
-        {dragOver && (
-          <div className="absolute inset-0 flex items-center justify-center bg-indigo-500/10">
-            <span className="text-[10px] text-indigo-300 font-medium bg-indigo-500/20 rounded-lg px-2 py-1">
-              Drop here
-            </span>
-          </div>
-        )}
+      <div className="flex items-center justify-center w-16 h-16 shrink-0">
+        <FileTypeIcon folder size={56} />
       </div>
-      <div className="px-2.5 py-2 flex flex-col gap-0.5">
-        <p className="text-[11px] font-medium truncate leading-tight text-[#d4d4d4] text-center">
-          {folder.name}
-        </p>
-        <p className="text-[10px] font-mono text-[#4a4a4a] text-center">
-          {folder.children > 0
-            ? `${folder.children} subfolder${folder.children !== 1 ? "s" : ""}`
-            : "folder"}
-        </p>
-      </div>
+      <p className="text-[11px] leading-tight text-[#d4d4d4] text-center line-clamp-2 break-words px-0.5 w-full">
+        {folder.name}
+      </p>
     </div>
   );
 }
@@ -543,9 +419,7 @@ function FileRow({
   onMoveToFolder: (name: string, path: string) => void;
 }) {
   const [renaming, setRenaming] = useState(false);
-  const isImage = file.mime_type.startsWith("image/");
-  const { icon, color } = getIconMeta(file.mime_type, file.name, 16);
-  const typeLabel = getTypeLabel(file.mime_type, file.name);
+  const isImage = isImageType(file.mime_type, file.name);
 
   return (
     <ContextMenu>
@@ -553,23 +427,19 @@ function FileRow({
         <div
           draggable
           onDragStart={(e) => e.dataTransfer.setData("text/plain", file.name)}
-          className={`grid items-center gap-2 px-2 py-2 rounded-lg border transition-colors fade-in cursor-grab active:cursor-grabbing
+          className={`group grid items-center gap-2 px-2 py-1.5 rounded-md transition-colors fade-in cursor-grab active:cursor-grabbing min-w-0
             ${
               inAiMode && similarity !== undefined && similarity >= 0.5
-                ? "border-indigo-500/20 hover:bg-[#2a2a2e] hover:border-indigo-500/30"
-                : "border-transparent hover:bg-[#2a2a2e] hover:border-[#3e3e42]"
+                ? "ring-1 ring-inset ring-indigo-500/25 hover:bg-[#242428]"
+                : "hover:bg-[#242428]"
             }`}
-          style={{ gridTemplateColumns: "32px 1fr 56px 70px 56px 80px" }}
+          style={{ gridTemplateColumns: LIST_GRID_COLUMNS }}
         >
-          <div className="w-8 h-8 rounded-lg overflow-hidden bg-[#1e1e1e] flex items-center justify-center shrink-0">
+          <div className="w-7 h-7 rounded-md overflow-hidden bg-[#1e1e1e] flex items-center justify-center shrink-0">
             {isImage ? (
-              <div className="w-full h-full relative">
-                <ImageThumb name={file.name} onGetPreview={onGetPreview} />
-              </div>
+              <ImageThumb file={file} onGetPreview={onGetPreview} size={28} />
             ) : (
-              <div style={{ color }} className="opacity-80">
-                {icon}
-              </div>
+              <FileTypeIcon name={file.name} mime={file.mime_type} size={16} />
             )}
           </div>
 
@@ -593,19 +463,14 @@ function FileRow({
             )}
           </div>
 
-          {/* Clean type label — no overflow */}
-          <Badge
-            variant="outline"
-            className="text-[9px] font-mono uppercase tracking-wide h-4 px-1.5 w-fit max-w-[54px] truncate"
-          >
-            {typeLabel}
-          </Badge>
+          <span className="text-[11px] text-[#7a7a7a] truncate min-w-0">
+            {kindLabel(file.mime_type, file.name)}
+          </span>
 
           <span className="text-[11px] font-mono text-[#6a6a6a] whitespace-nowrap">
             {formatBytes(file.size)}
           </span>
 
-          {/* Fixed-width cell for match/date — no overflow */}
           <div className="flex items-center min-w-0">
             {inAiMode && similarity !== undefined ? (
               <SimilarityBadge score={similarity} />
@@ -616,7 +481,7 @@ function FileRow({
             )}
           </div>
 
-          <div className="flex items-center justify-end shrink-0">
+          <div className="flex items-center justify-end shrink-0 opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
             <Button
               variant="ghost"
               size="icon"
@@ -664,7 +529,7 @@ function FileRow({
         </ContextMenuItem>
         <ContextMenuSub>
           <ContextMenuSubTrigger>
-            <Folder size={13} className="mr-2" /> Move to
+            <FileTypeIcon folder size={13} className="mr-2" /> Move to
           </ContextMenuSubTrigger>
           <ContextMenuSubContent>
             <MoveToMenu
@@ -724,6 +589,17 @@ export function FileArea({
   );
   const inAiMode = aiResults.length > 0;
 
+  // Selection doesn't carry meaning across navigation/search changes.
+  // Adjusted during render (React's documented pattern for resetting state
+  // when a prop changes) rather than an effect, to avoid an extra render pass.
+  const selectionScope = `${currentFolder}::${inAiMode}`;
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [lastSelectionScope, setLastSelectionScope] = useState(selectionScope);
+  if (selectionScope !== lastSelectionScope) {
+    setLastSelectionScope(selectionScope);
+    setSelectedKey(null);
+  }
+
   // Hide folders when AI search is active — only show ranked files
   const subfolders = inAiMode
     ? []
@@ -762,10 +638,8 @@ export function FileArea({
       // flex-1 + min-h-0 ensures this column can shrink and scroll
       <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
         <div
-          className="grid gap-3 px-3 py-2 border-b border-[#3e3e42] bg-[#1e1e1e] text-[10px] font-semibold uppercase tracking-widest text-[#4a4a4a] shrink-0"
-          style={{
-            gridTemplateColumns: "32px minmax(0,1fr) 52px 62px 52px auto",
-          }}
+          className="grid gap-2 px-3 py-2 border-b border-[#2a2a2e] bg-[#1e1e1e] text-[10px] font-semibold uppercase tracking-widest text-[#4a4a4a] shrink-0"
+          style={{ gridTemplateColumns: LIST_GRID_COLUMNS }}
         >
           <span />
           <span>Name</span>
@@ -780,29 +654,17 @@ export function FileArea({
             {subfolders.map((folder) => (
               <div
                 key={folder.path}
-                className="grid items-center gap-3 px-3 py-2 rounded-lg border border-transparent
-                  hover:bg-[#2a2a2e] hover:border-[#3e3e42] transition-colors cursor-pointer"
-                style={{
-                  gridTemplateColumns: "32px minmax(0,1fr) 52px 62px 52px auto",
-                }}
+                className="group grid items-center gap-2 px-2 py-1.5 rounded-md hover:bg-[#242428] transition-colors cursor-pointer min-w-0"
+                style={{ gridTemplateColumns: LIST_GRID_COLUMNS }}
                 onDoubleClick={() => onNavigateFolder(folder.path)}
               >
-                <div className="w-8 h-8 flex items-center justify-center">
-                  <Folder
-                    size={18}
-                    className="text-[#5b8fd9]"
-                    strokeWidth={1.5}
-                  />
+                <div className="w-7 h-7 flex items-center justify-center">
+                  <FileTypeIcon folder size={18} />
                 </div>
-                <span className="text-xs font-medium text-[#d4d4d4]">
+                <span className="text-xs font-medium text-[#d4d4d4] truncate">
                   {folder.name}
                 </span>
-                <Badge
-                  variant="outline"
-                  className="text-[9px] font-mono h-4 px-1.5 w-fit"
-                >
-                  folder
-                </Badge>
+                <span className="text-[11px] text-[#7a7a7a]">Folder</span>
                 <span />
                 <span />
                 <span />
@@ -822,29 +684,40 @@ export function FileArea({
     );
   }
 
-  // Grid view — ScrollArea wraps everything
+  // Grid view — Explorer "large icons" style
   return (
     <ScrollArea className="flex-1 min-h-0">
       <div
-        className="p-4 grid gap-3"
-        style={{ gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))" }}
+        className="p-4 grid gap-1"
+        style={{ gridTemplateColumns: "repeat(auto-fill, minmax(92px, 1fr))" }}
+        onClick={() => setSelectedKey(null)}
       >
-        {subfolders.map((folder) => (
-          <FolderCard
-            key={folder.path}
-            folder={folder}
-            onOpen={onNavigateFolder}
-            onDrop={onMoveToFolder}
-          />
-        ))}
-        {files.map((f) => (
-          <FileCard
-            key={f.name}
-            file={f}
-            similarity={similarityMap[f.name]}
-            {...shared}
-          />
-        ))}
+        {subfolders.map((folder) => {
+          const key = `folder:${folder.path}`;
+          return (
+            <FolderTile
+              key={key}
+              folder={folder}
+              selected={selectedKey === key}
+              onSelect={() => setSelectedKey(key)}
+              onOpen={onNavigateFolder}
+              onDrop={onMoveToFolder}
+            />
+          );
+        })}
+        {files.map((f) => {
+          const key = `file:${f.name}`;
+          return (
+            <FileTile
+              key={key}
+              file={f}
+              similarity={similarityMap[f.name]}
+              selected={selectedKey === key}
+              onSelect={() => setSelectedKey(key)}
+              {...shared}
+            />
+          );
+        })}
       </div>
     </ScrollArea>
   );

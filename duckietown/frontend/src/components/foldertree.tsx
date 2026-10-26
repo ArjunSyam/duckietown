@@ -1,15 +1,9 @@
 import { useState } from "react";
-import {
-  Folder,
-  FolderOpen,
-  FolderPlus,
-  Trash2,
-  ChevronRight,
-  ChevronDown,
-} from "lucide-react";
+import { FolderPlus, Trash2, ChevronRight, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import type { FolderRecord } from "../types";
+import { FileTypeIcon } from "../lib/filetypes";
 
 interface Props {
   folders: FolderRecord[];
@@ -96,6 +90,20 @@ function FolderNode({
   const [newName, setNewName] = useState("");
   const [dragOver, setDragOver] = useState(false);
 
+  // `expanded` is local (a user can manually collapse a node that's on the
+  // current path) but `isOpen` is prop-derived from `currentFolder`, so a
+  // plain useState initializer never sees it change on later navigation.
+  // Auto-expand whenever isOpen newly becomes true — e.g. navigating back
+  // to a folder whose ancestor got manually collapsed — without fighting
+  // a manual collapse the rest of the time. Adjusted during render (React's
+  // documented pattern for syncing state to a changed prop) rather than an
+  // effect, so the tree doesn't render stale-collapsed for one frame first.
+  const [lastIsOpen, setLastIsOpen] = useState(isOpen);
+  if (isOpen !== lastIsOpen) {
+    setLastIsOpen(isOpen);
+    if (isOpen) setExpanded(true);
+  }
+
   const isSelected = currentFolder === path;
   const hasChildren = children.length > 0;
 
@@ -127,7 +135,7 @@ function FolderNode({
       {/* Row */}
       <div
         className={`flex items-center gap-1 px-2 py-[6px] rounded-sm cursor-pointer transition-colors group
-          ${isSelected ? "nav-active font-medium" : "text-[#9d9d9d] hover:text-[#d4d4d4] hover:bg-[#2d2d30]"}
+          ${isSelected ? "bg-indigo-500/15 text-indigo-300 font-medium" : "text-[#9d9d9d] hover:text-[#d4d4d4] hover:bg-[#2d2d30]"}
           ${dragOver ? "bg-indigo-500/20 border border-indigo-500/40" : ""}`}
         style={{ paddingLeft: `${8 + depth * 12}px` }}
         onClick={() => {
@@ -150,11 +158,7 @@ function FolderNode({
         </span>
 
         {/* Icon */}
-        {isSelected || expanded ? (
-          <FolderOpen size={13} className="shrink-0" />
-        ) : (
-          <Folder size={13} className="shrink-0" />
-        )}
+        <FileTypeIcon folder open={isSelected || expanded} size={13} className="shrink-0" />
 
         <span className="flex-1 text-xs truncate">{name}</span>
 

@@ -1,0 +1,6 @@
+File-type SVGs live in per-category subfolders here, named exactly by
+extension — e.g. documents/pdf.svg, images/png.svg, code/py.svg.
+
+Picked up automatically (see src/lib/filetypes.tsx) via a glob import — no
+code changes needed to add more. An extension with no matching SVG falls
+back to a built-in lucide icon chosen by its category.

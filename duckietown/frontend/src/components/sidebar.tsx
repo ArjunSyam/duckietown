@@ -172,10 +172,7 @@ export function Sidebar({
           <FolderTree
             folders={folders}
             currentFolder={currentFolder}
-            onSelectFolder={(path) => {
-              onSelectFolder(path);
-              onSelectType("all"); // reset type filter when navigating folders
-            }}
+            onSelectFolder={onSelectFolder}
             onCreateFolder={onCreateFolder}
             onDeleteFolder={onDeleteFolder}
             onDropFile={onDropFileToFolder}
@@ -192,7 +189,7 @@ export function Sidebar({
               className={`w-full flex items-center gap-2 px-2 py-[7px] rounded-sm transition-colors mb-0.5 text-left
                 ${
                   selectedType === item.id && currentFolder === ""
-                    ? "nav-active font-medium"
+                    ? "bg-indigo-500/15 text-indigo-300 font-medium"
                     : "text-[#9d9d9d] hover:text-[#d4d4d4] hover:bg-[#2d2d30]"
                 }`}
             >

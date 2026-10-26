@@ -161,14 +161,6 @@ body,
     --wails-draggable: no-drag;
 }
 
-/* ── Sidebar nav active state ── */
-.nav-active {
-    background: oklch(0.488 0.243 264.376 / 0.12) !important;
-    color: oklch(0.623 0.214 259.815) !important;
-    border-left: 2px solid oklch(0.623 0.214 259.815);
-    padding-left: 6px !important;
-}
-
 /* ── Animations ── */
 @keyframes spin {
     to {
