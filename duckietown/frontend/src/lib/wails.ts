@@ -19,12 +19,31 @@ import {
   DeleteFolder,
   MoveFileToFolder,
   OrganiseFolder,
+  UndoLastOrganise,
   ParseOrganiseIntent,
+  ProposeOrganise,
+  ConfirmOrganisePlan,
+  CancelOrganisePlan,
+  BackfillFileProfiles,
+  ConfirmRenamePlan,
+  CancelRenamePlan,
+  GetExplorerIntegrationEnabled,
+  SetExplorerIntegrationEnabled,
+  RemoveExplorerIntegration,
 } from "../../wailsjs/go/main/App";
 
 import { EventsOn, EventsOff, BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 
-import type { SearchResult, FolderRecord, OrganiseResult } from "../types";
+import type {
+  SearchResult,
+  FolderRecord,
+  OrganiseResult,
+  OrganisePreview,
+  ConfirmOrganiseResult,
+  BackfillResult,
+  RenameSelection,
+  ConfirmRenameResult,
+} from "../types";
 
 export interface OrganiseIntent {
   is_organise: boolean;
@@ -76,7 +95,8 @@ export const wails = {
     fileName = "",
   ): Promise<void> => ChatWithAgent(message, history, fileName),
 
-  // AI — parse organise intent via Gemma
+  // AI — parse organise intent (back-compat; the new UI flow uses
+  // proposeOrganise/confirmOrganisePlan instead, see below)
   parseOrganiseIntent: (message: string): Promise<OrganiseIntent> =>
     ParseOrganiseIntent(message),
 
@@ -92,6 +112,39 @@ export const wails = {
     typeFilter = "",
   ): Promise<OrganiseResult> =>
     OrganiseFolder(currentFolderPath, query, newFolderName, typeFilter),
+
+  // AI — undo the most recent OrganiseFolder (one-shot, not a full history)
+  undoLastOrganise: (): Promise<OrganiseResult> => UndoLastOrganise(),
+
+  // AI — organise v2: search -> judge -> preview -> confirm -> move
+  proposeOrganise: (
+    message: string,
+    currentFolder: string,
+  ): Promise<OrganisePreview> => ProposeOrganise(message, currentFolder),
+  confirmOrganisePlan: (
+    planId: string,
+    selectedFileNames: string[],
+  ): Promise<ConfirmOrganiseResult> =>
+    ConfirmOrganisePlan(planId, selectedFileNames),
+  cancelOrganisePlan: (planId: string): Promise<void> =>
+    CancelOrganisePlan(planId),
+
+  // AI — backfill file profiles for files indexed before enrichment existed
+  backfillFileProfiles: (): Promise<BackfillResult> => BackfillFileProfiles(),
+
+  // AI — rename: search -> propose names -> preview -> confirm -> rename
+  confirmRenamePlan: (
+    planId: string,
+    selections: RenameSelection[],
+  ): Promise<ConfirmRenameResult> => ConfirmRenamePlan(planId, selections),
+  cancelRenamePlan: (planId: string): Promise<void> => CancelRenamePlan(planId),
+
+  // Windows Explorer integration (no-op on other OSes)
+  getExplorerIntegrationEnabled: (): Promise<boolean> =>
+    GetExplorerIntegrationEnabled(),
+  setExplorerIntegrationEnabled: (enabled: boolean): Promise<void> =>
+    SetExplorerIntegrationEnabled(enabled),
+  removeExplorerIntegration: (): Promise<void> => RemoveExplorerIntegration(),
 
   // Events
   on: EventsOn,

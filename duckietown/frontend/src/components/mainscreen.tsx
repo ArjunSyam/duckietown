@@ -59,8 +59,11 @@ export function MainScreen({
   const [folders, setFolders] = useState<FolderRecord[]>([]);
 
   const [aiPanelOpen, setAiPanelOpen] = useState(false);
+  const [aiPanelExpanded, setAiPanelExpanded] = useState(false);
   const [aiTargetFile, setAiTargetFile] = useState<string | null>(null);
   const [aiSessionKey, setAiSessionKey] = useState(0);
+
+  const [explorerIntegrationEnabled, setExplorerIntegrationEnabled] = useState(true);
 
   // loadFolders — plain async function, called from event handlers and imperative code
   const loadFolders = useCallback(async () => {
@@ -86,6 +89,35 @@ export function MainScreen({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    wails
+      .getExplorerIntegrationEnabled()
+      .then((enabled) => {
+        if (!cancelled) setExplorerIntegrationEnabled(enabled);
+      })
+      .catch(console.error);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleToggleExplorerIntegration = async () => {
+    const next = !explorerIntegrationEnabled;
+    setExplorerIntegrationEnabled(next);
+    try {
+      await wails.setExplorerIntegrationEnabled(next);
+      toast.success(
+        next ? "Showing Duckietown in File Explorer" : "Hidden from File Explorer",
+      );
+    } catch (e) {
+      setExplorerIntegrationEnabled(!next); // revert on failure
+      toast.error("Could not update File Explorer integration", {
+        description: String(e),
+      });
+    }
+  };
 
   // Wails events — setState called inside callbacks, not directly in effect body
   useEffect(() => {
@@ -211,6 +243,7 @@ export function MainScreen({
 
   const closeAiPanel = () => {
     setAiPanelOpen(false);
+    setAiPanelExpanded(false);
     setAiTargetFile(null);
   };
 
@@ -251,10 +284,14 @@ export function MainScreen({
         }}
         onSignOut={onSignOut}
         userEmail={user?.email ?? ""}
+        explorerIntegrationEnabled={explorerIntegrationEnabled}
+        onToggleExplorerIntegration={handleToggleExplorerIntegration}
       />
 
-      <div className="flex flex-1 overflow-hidden min-w-0">
-        <div className="flex flex-col flex-1 overflow-hidden min-w-0">
+      <div className="flex flex-1 min-h-0 overflow-hidden min-w-0">
+        <div
+          className={`flex flex-col flex-1 min-h-0 overflow-hidden min-w-0 ${aiPanelExpanded ? "hidden" : ""}`}
+        >
           {/* Combined topbar: breadcrumb + ingest status + Ask AI */}
           <Topbar
             currentFolder={currentFolder}
@@ -321,6 +358,8 @@ export function MainScreen({
             sessionKey={aiSessionKey}
             currentFolder={currentFolder}
             onClearTargetFile={clearAiTargetFile}
+            expanded={aiPanelExpanded}
+            onToggleExpand={() => setAiPanelExpanded((v) => !v)}
           />
         )}
       </div>

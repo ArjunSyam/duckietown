@@ -63,20 +63,65 @@ func (s *Service) ListFolders() ([]FolderRecord, error) {
 	return folders, nil
 }
 
+// SanitizeRelativeFolderPath validates a vault-relative folder path coming
+// from anywhere a user, the AI organise flow, or another process could
+// influence it: rejects absolute paths and any ".." segment. Pass
+// allowRoot=true to let "" (and ".") through meaning "the vault root"
+// (MoveFileToFolder wants that; CreateFolder never does — you can't create
+// "the root").
+func SanitizeRelativeFolderPath(p string, allowRoot bool) (string, error) {
+	if p == "" {
+		if allowRoot {
+			return "", nil
+		}
+		return "", fmt.Errorf("empty folder path")
+	}
+	if filepath.IsAbs(p) {
+		return "", fmt.Errorf("absolute paths are not allowed: %q", p)
+	}
+	cleaned := filepath.ToSlash(filepath.Clean(p))
+	if cleaned == "." {
+		if allowRoot {
+			return "", nil
+		}
+		return "", fmt.Errorf("invalid folder path: %q", p)
+	}
+	for _, seg := range strings.Split(cleaned, "/") {
+		if seg == ".." || seg == "" {
+			return "", fmt.Errorf("folder path escapes the vault root: %q", p)
+		}
+	}
+	return cleaned, nil
+}
+
+// isWithinVault is a defense-in-depth double-check on the final absolute
+// path, in addition to SanitizeRelativeFolderPath's segment check.
+func isWithinVault(vaultRoot, target string) bool {
+	rel, err := filepath.Rel(vaultRoot, target)
+	if err != nil {
+		return false
+	}
+	rel = filepath.ToSlash(rel)
+	return rel != ".." && !strings.HasPrefix(rel, "../")
+}
+
 func (s *Service) CreateFolder(relativePath string) error {
 	if s.Path == "" {
 		return fmt.Errorf("no vault path set")
 	}
-	relativePath = filepath.ToSlash(filepath.Clean(relativePath))
-	if relativePath == "." || relativePath == "" {
-		return fmt.Errorf("invalid folder path")
+	clean, err := SanitizeRelativeFolderPath(relativePath, false)
+	if err != nil {
+		return err
 	}
-	absPath := filepath.Join(s.Path, filepath.FromSlash(relativePath))
+	absPath := filepath.Join(s.Path, filepath.FromSlash(clean))
+	if !isWithinVault(s.Path, absPath) {
+		return fmt.Errorf("folder path escapes the vault root: %q", relativePath)
+	}
 	if err := os.MkdirAll(absPath, 0755); err != nil {
 		return fmt.Errorf("could not create folder: %w", err)
 	}
-	wailsruntime.EventsEmit(s.ctx, "folder-created", relativePath)
-	fmt.Printf("📁 Created folder: %s\n", relativePath)
+	wailsruntime.EventsEmit(s.ctx, "folder-created", clean)
+	fmt.Printf("📁 Created folder: %s\n", clean)
 	return nil
 }
 
@@ -127,6 +172,10 @@ func (s *Service) MoveFileToFolder(fileName, targetFolderPath string) error {
 	if s.Path == "" {
 		return fmt.Errorf("no vault path set")
 	}
+	targetFolderPath, err := SanitizeRelativeFolderPath(targetFolderPath, true)
+	if err != nil {
+		return err
+	}
 
 	currentPath, currentFolder, err := s.FindFileInVault(fileName)
 	if err != nil {
@@ -141,6 +190,9 @@ func (s *Service) MoveFileToFolder(fileName, targetFolderPath string) error {
 		destDir = s.Path
 	} else {
 		destDir = filepath.Join(s.Path, filepath.FromSlash(targetFolderPath))
+	}
+	if !isWithinVault(s.Path, destDir) {
+		return fmt.Errorf("folder path escapes the vault root: %q", targetFolderPath)
 	}
 	if err := os.MkdirAll(destDir, 0755); err != nil {
 		return fmt.Errorf("could not create destination: %w", err)
@@ -161,7 +213,7 @@ func (s *Service) MoveFileToFolder(fileName, targetFolderPath string) error {
 		s.Supa.DeleteStorageFile(fileName, currentFolder)
 		s.Supa.UpdateFileFolderPath(fileName, targetFolderPath, newSP)
 		// Update ChromaDB metadata only — NO re-embedding
-		s.Sidecar.MoveFileEmbeddings(fileName, fileName)
+		s.Sidecar.MoveFileEmbeddings(fileName, fileName, targetFolderPath)
 	}()
 
 	wailsruntime.EventsEmit(s.ctx, "file-moved", map[string]string{
@@ -175,6 +227,13 @@ func (s *Service) MoveFileToFolder(fileName, targetFolderPath string) error {
 }
 
 func (s *Service) FindFileInVault(fileName string) (absPath, folderPath string, err error) {
+	// desktop.ini (internal/shell's folder-icon marker) should never be
+	// resolvable through normal file operations, even though shouldSkipFile
+	// already keeps it out of the index entirely — defense in depth, since
+	// this also protects MoveFileToFolder/RenameFile, which both start here.
+	if strings.EqualFold(fileName, "desktop.ini") {
+		return "", "", fmt.Errorf("not found")
+	}
 	err = filepath.WalkDir(s.Path, func(p string, d os.DirEntry, e error) error {
 		if e != nil || d.IsDir() {
 			return nil
@@ -262,4 +321,63 @@ func (s *Service) FindFilesByType(typeFilter string) []string {
 		return nil
 	})
 	return names
+}
+
+// ── Collision handling (used by the organise confirm flow) ─────────────
+
+// FileExistsInFolder reports whether a file with this exact name already
+// sits directly inside the given vault-relative folder. Not a recursive
+// vault-wide check — this is specifically for move-collision detection at
+// one destination.
+func (s *Service) FileExistsInFolder(fileName, folderPath string) bool {
+	if s.Path == "" {
+		return false
+	}
+	dir := s.Path
+	if folderPath != "" {
+		dir = filepath.Join(s.Path, filepath.FromSlash(folderPath))
+	}
+	_, err := os.Stat(filepath.Join(dir, fileName))
+	return err == nil
+}
+
+// NextAvailableName returns a collision-free name for targetFolderPath by
+// suffixing " (2)", " (3)", ... before the extension.
+func (s *Service) NextAvailableName(fileName, targetFolderPath string) (string, error) {
+	ext := filepath.Ext(fileName)
+	base := strings.TrimSuffix(fileName, ext)
+	for i := 2; i <= 999; i++ {
+		candidate := fmt.Sprintf("%s (%d)%s", base, i, ext)
+		if !s.FileExistsInFolder(candidate, targetFolderPath) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("could not find a free name for %q in %q", fileName, targetFolderPath)
+}
+
+// FileExistsAnywhereInVault reports whether a file with this exact name
+// exists ANYWHERE in the vault (any folder) — unlike the folder-scoped
+// FileExistsInFolder. Required for rename: Supabase's files table
+// enforces UNIQUE(user_id, name) vault-wide, not per-folder (see
+// docs/ARCHITECTURE.md's database schema section), so a same-folder-only
+// collision check could let a rename look collision-free locally while
+// silently desyncing Supabase.
+func (s *Service) FileExistsAnywhereInVault(fileName string) bool {
+	_, _, err := s.FindFileInVault(fileName)
+	return err == nil
+}
+
+// NextAvailableNameVaultWide is NextAvailableName's vault-wide
+// counterpart, for the same reason FileExistsAnywhereInVault exists
+// alongside FileExistsInFolder.
+func (s *Service) NextAvailableNameVaultWide(fileName string) (string, error) {
+	ext := filepath.Ext(fileName)
+	base := strings.TrimSuffix(fileName, ext)
+	for i := 2; i <= 999; i++ {
+		candidate := fmt.Sprintf("%s (%d)%s", base, i, ext)
+		if !s.FileExistsAnywhereInVault(candidate) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("could not find a free name for %q anywhere in the vault", fileName)
 }

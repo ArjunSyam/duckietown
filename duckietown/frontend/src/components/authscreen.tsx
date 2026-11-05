@@ -1,15 +1,28 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Cloud, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 
 interface Props {
   onSignIn: () => Promise<void>;
+  // A sign-in failure that surfaces asynchronously, after onSignIn() has
+  // already resolved (e.g. the backend opened the browser fine, but the
+  // Google round-trip itself failed later). `nonce` lets the same message
+  // re-trigger the reset below even if it repeats verbatim.
+  asyncError?: { msg: string; nonce: number } | null;
 }
 
-export function AuthScreen({ onSignIn }: Props) {
+export function AuthScreen({ onSignIn, asyncError }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // Reset the stuck "Opening browser..." button when the backend reports
+  // a failure that happened after SignInWithGoogle already returned.
+  useEffect(() => {
+    if (!asyncError) return;
+    setError(asyncError.msg);
+    setLoading(false);
+  }, [asyncError]);
 
   const handleSignIn = async () => {
     setLoading(true);

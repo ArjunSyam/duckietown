@@ -7,9 +7,14 @@ import (
 	"path/filepath"
 )
 
-// Config is the per-user settings persisted to disk (vault path today).
+// Config is the per-user settings persisted to disk.
 type Config struct {
 	VaultPath string `json:"vault_path"`
+	// DisableExplorerIntegration opts out of the Windows Explorer
+	// integration (custom folder icon + nav-pane pin). Zero-value false
+	// means "enabled" — on by default, and every config file saved before
+	// this field existed unmarshals to enabled with no migration needed.
+	DisableExplorerIntegration bool `json:"disable_explorer_integration,omitempty"`
 }
 
 // Session is the persisted auth session (tokens survive app restarts).

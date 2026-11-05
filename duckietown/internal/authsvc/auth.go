@@ -10,6 +10,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -18,10 +20,21 @@ import (
 	"duckietown/internal/supabase"
 )
 
-// Fixed port for OAuth callback.
-// Must be in Supabase → Authentication → URL Configuration → Redirect URLs
-const callbackPort = 49155
-const callbackURL = "http://localhost:49155/callback"
+// Candidate ports for the local OAuth callback server, tried in order.
+// Deliberately kept below Windows' dynamic/ephemeral port range
+// (49152-65535): Hyper-V, WSL2, and Docker's winnat reserve blocks in that
+// range that no process is allowed to bind, which surfaces as a bind
+// failure that looks like (but isn't) "address already in use". EVERY one
+// of these must be registered in Supabase under Authentication → URL
+// Configuration → Redirect URLs, as http://<callbackHost>:<port>/callback.
+var callbackPorts = []int{47155, 47156, 47157}
+
+// callbackHost is used for BOTH the listener's bind address and the
+// redirect_to URL sent to Supabase — never "localhost", which can resolve
+// to ::1 ahead of 127.0.0.1 and silently miss an IPv4-only listener,
+// surfacing as ERR_CONNECTION_REFUSED after Google auth already succeeded.
+const callbackHost = "127.0.0.1"
+const signInTimeout = 5 * time.Minute
 
 type Service struct {
 	ctx  context.Context
@@ -31,6 +44,13 @@ type Service struct {
 	email        string
 	accessToken  string
 	refreshToken string
+
+	// flowMu guards cancelFlow: SignInWithGoogle can be called again
+	// (user retries, or clicks twice) while a previous attempt's callback
+	// server is still listening, so each call cancels whatever flow came
+	// before it rather than leaking/fighting over the port.
+	flowMu     sync.Mutex
+	cancelFlow context.CancelFunc
 
 	// OnAuthChange fires after a successful login, session restore, or
 	// token refresh, so the composition root can propagate the new
@@ -81,16 +101,32 @@ func (s *Service) Startup() error {
 // ── Sign in with Google ──────────────────────────────────────────────────
 
 func (s *Service) SignInWithGoogle() error {
-	serverReady := make(chan struct{})
-
-	go s.listenForCallback(serverReady)
-
-	// Block until the port is genuinely bound and listening
-	select {
-	case <-serverReady:
-	case <-time.After(5 * time.Second):
-		return fmt.Errorf("callback server failed to start on port %d", callbackPort)
+	// A previous attempt may still be listening (user clicked twice, or
+	// retried after closing the browser) — cancel it so it releases its
+	// port instead of fighting this one for it.
+	s.flowMu.Lock()
+	if s.cancelFlow != nil {
+		s.cancelFlow()
 	}
+	flowCtx, cancel := context.WithCancel(context.Background())
+	s.cancelFlow = cancel
+	s.flowMu.Unlock()
+
+	listener, port, err := bindCallbackListener()
+	if err != nil {
+		cancel()
+		return err
+	}
+
+	callbackURL := fmt.Sprintf("http://%s:%d/callback", callbackHost, port)
+
+	// Info-level: lets a bind/redirect host-or-port mismatch (the exact
+	// failure mode that causes ERR_CONNECTION_REFUSED after Google auth
+	// already succeeded) be spotted directly from the logs.
+	fmt.Printf("ℹ️ auth: callback server listening on %s — redirect_to=%s\n",
+		listener.Addr().String(), callbackURL)
+
+	go s.serveCallback(flowCtx, cancel, listener, callbackURL)
 
 	// Build Supabase Google OAuth URL
 	oauthURL := fmt.Sprintf(
@@ -101,29 +137,70 @@ func (s *Service) SignInWithGoogle() error {
 
 	// Open in system browser
 	if err := config.OpenPath(oauthURL); err != nil {
+		cancel() // tears down the listener we just started serving on
 		return fmt.Errorf("could not open browser: %w", err)
 	}
 
 	return nil
 }
 
-// listenForCallback binds the port first, signals ready, then serves.
-func (s *Service) listenForCallback(ready chan struct{}) {
-	// Bind the port immediately — OS reserves it right here.
-	// This is guaranteed to be listening before we close(ready).
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", callbackPort))
-	if err != nil {
-		close(ready)
-		wailsruntime.EventsEmit(s.ctx, "auth-error",
-			fmt.Sprintf("port %d already in use: %s", callbackPort, err.Error()))
-		return
+// bindCallbackListener tries each candidate port, loopback-only, in order
+// and returns the listener for the first one that binds. Binding to
+// 127.0.0.1 rather than all interfaces avoids unnecessary firewall prompts
+// for what is purely a local redirect target.
+func bindCallbackListener() (net.Listener, int, error) {
+	var failures []string
+	for _, port := range callbackPorts {
+		listener, err := net.Listen("tcp", fmt.Sprintf("%s:%d", callbackHost, port))
+		if err == nil {
+			return listener, port, nil
+		}
+		failures = append(failures, fmt.Sprintf("%d (%s)", port, describeBindError(err)))
 	}
+	return nil, 0, fmt.Errorf(
+		"could not start the local sign-in server — every candidate port failed: %s. "+
+			"Windows may have reserved some of these ports for Hyper-V/WSL2/Docker; "+
+			"run `netsh interface ipv4 show excludedportrange protocol=tcp` to check, "+
+			"or free one of them and try again",
+		strings.Join(failures, ", "),
+	)
+}
 
+// describeBindError classifies a bind failure accurately instead of
+// assuming "already in use" for every error.
+func describeBindError(err error) string {
+	switch {
+	case isAddrInUse(err):
+		return "address already in use"
+	case isAccessForbidden(err):
+		return "access forbidden — likely reserved by Windows"
+	default:
+		return err.Error()
+	}
+}
+
+// serveCallback runs the local HTTP server that receives the OAuth
+// redirect and the token it posts back. It shuts the server down exactly
+// once — on success, on error, if ctx is canceled (a newer sign-in attempt
+// superseded this one, or the app is shutting down), or after
+// signInTimeout with no response — so a later SignInWithGoogle call never
+// finds this flow's listener still open.
+func (s *Service) serveCallback(ctx context.Context, cancel context.CancelFunc, listener net.Listener, callbackURL string) {
 	mux := http.NewServeMux()
 	server := &http.Server{Handler: mux}
 
-	// Port is bound — signal ready so browser can open
-	close(ready)
+	var shutdownOnce sync.Once
+	shutdown := func() {
+		shutdownOnce.Do(func() {
+			sctx, cancelShutdown := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancelShutdown()
+			server.Shutdown(sctx)
+		})
+	}
+
+	done := make(chan struct{})
+	var finishOnce sync.Once
+	finish := func() { finishOnce.Do(func() { close(done) }) }
 
 	// /callback — Supabase redirects here after Google auth.
 	// Tokens are in the URL fragment (#access_token=...) so we serve an
@@ -135,6 +212,8 @@ func (s *Service) listenForCallback(ready chan struct{}) {
 
 	// /token — receives the token POSTed from the HTML page
 	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		defer finish()
+
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
@@ -194,15 +273,19 @@ func (s *Service) listenForCallback(ready chan struct{}) {
 		})
 
 		w.WriteHeader(http.StatusOK)
-
-		// Shut down server cleanly after response is sent
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			server.Shutdown(context.Background())
-		}()
 	})
 
-	// Serve on the already-bound listener — no race condition possible
+	go func() {
+		select {
+		case <-done:
+		case <-ctx.Done():
+		case <-time.After(signInTimeout):
+			wailsruntime.EventsEmit(s.ctx, "auth-error", "sign-in timed out after 5 minutes — please try again")
+		}
+		shutdown()
+		cancel()
+	}()
+
 	server.Serve(listener)
 }
 

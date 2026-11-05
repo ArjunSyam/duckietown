@@ -67,7 +67,13 @@ func Start() error {
 		"SIDECAR_PORT=8000",
 		"CHROMA_DIR="+chromaDir,
 		"OPENROUTER_API_KEY="+os.Getenv("OPENROUTER_API_KEY"),
-		"OPENROUTER_MODEL="+getEnvOrDefault("OPENROUTER_MODEL", "google/gemma-3-27b-it"),
+		// OPENROUTER_MODEL is a deprecated alias for CHAT_MODEL — forwarded
+		// as-is so the sidecar's own fallback chain still sees it.
+		"OPENROUTER_MODEL="+os.Getenv("OPENROUTER_MODEL"),
+		"CHAT_MODEL="+resolveModelEnv("CHAT_MODEL", "OPENROUTER_MODEL"),
+		"INTENT_MODEL="+resolveModelEnv("INTENT_MODEL"),
+		"CAPTION_MODEL="+resolveModelEnv("CAPTION_MODEL"),
+		"ENRICH_MODEL="+resolveModelEnv("ENRICH_MODEL"),
 		// Silence ChromaDB telemetry — fixes "capture() takes 1 positional argument" noise
 		"ANONYMIZED_TELEMETRY=False",
 		"CHROMA_TELEMETRY=False",
@@ -157,9 +163,21 @@ func userDataDir() string {
 	return filepath.Join(home, ".duckietown")
 }
 
-func getEnvOrDefault(key, def string) string {
-	if v := os.Getenv(key); v != "" {
+// defaultModel mirrors sidecar/config.py's DEFAULT_MODEL — kept in sync by
+// hand since the two sides never import from each other.
+const defaultModel = "anthropic/claude-haiku-5.5"
+
+// resolveModelEnv returns the first non-empty env var among primary and its
+// aliases, falling back to defaultModel. Mirrors sidecar/config.py's
+// _resolve_model so Go and the sidecar agree without a shared import.
+func resolveModelEnv(primary string, aliases ...string) string {
+	if v := os.Getenv(primary); v != "" {
 		return v
 	}
-	return def
+	for _, a := range aliases {
+		if v := os.Getenv(a); v != "" {
+			return v
+		}
+	}
+	return defaultModel
 }

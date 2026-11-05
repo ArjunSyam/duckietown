@@ -14,6 +14,7 @@ import {
   List,
   RefreshCw,
   LogOut,
+  FolderSymlink,
 } from "lucide-react";
 import { Separator } from "@/components/ui/separator";
 import { Progress } from "@/components/ui/progress";
@@ -92,6 +93,8 @@ interface Props {
   onRefresh: () => void;
   onSignOut: () => void;
   userEmail: string;
+  explorerIntegrationEnabled: boolean;
+  onToggleExplorerIntegration: () => void;
 }
 
 export function Sidebar({
@@ -113,6 +116,8 @@ export function Sidebar({
   onRefresh,
   onSignOut,
   userEmail,
+  explorerIntegrationEnabled,
+  onToggleExplorerIntegration,
 }: Props) {
   const folderName = vaultPath.split(/[\\/]/).pop() ?? "Vault";
   const totalSize = files.reduce((acc, f) => acc + (f.size ?? 0), 0);
@@ -120,7 +125,7 @@ export function Sidebar({
 
   return (
     <TooltipProvider>
-      <aside className="w-[220px] min-w-[220px] flex flex-col border-r border-[#3e3e42] bg-[#252526]">
+      <aside className="w-[220px] min-w-[220px] h-full min-h-0 flex flex-col border-r border-[#3e3e42] bg-[#252526]">
         {/* Brand */}
         <div className="drag-region flex items-center justify-between px-4 py-3 border-b border-[#3e3e42]">
           <div className="flex items-center gap-2.5 no-drag">
@@ -164,7 +169,7 @@ export function Sidebar({
           </Tooltip>
         </div>
 
-        <ScrollArea className="flex-1 px-2 py-2">
+        <ScrollArea className="flex-1 min-h-0 px-2 py-2">
           {/* Folders section */}
           <p className="text-[10px] font-semibold uppercase tracking-[1.5px] text-[#4a4a4a] px-2 pb-1.5 pt-1">
             Folders
@@ -269,6 +274,25 @@ export function Sidebar({
             <div className="flex-1 min-w-0">
               <p className="text-[10px] text-[#4a4a4a] truncate">{userEmail}</p>
             </div>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className={`w-6 h-6 shrink-0 ${
+                    explorerIntegrationEnabled ? "text-[#6a6a6a]" : "text-[#4a4a4a]"
+                  }`}
+                  onClick={onToggleExplorerIntegration}
+                >
+                  <FolderSymlink size={12} />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>
+                {explorerIntegrationEnabled
+                  ? "Showing in File Explorer — click to hide"
+                  : "Show in File Explorer"}
+              </TooltipContent>
+            </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button

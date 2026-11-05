@@ -11,6 +11,13 @@ requests==2.32.3
 
 # Vector DB
 chromadb==0.5.23
+# chromadb pins posthog>=2.4.0 with no upper bound, so a bare pip install
+# pulls today's posthog — whose capture() signature chromadb 0.5.23's
+# telemetry code is incompatible with (TypeError: capture() takes 1
+# positional argument but 3 were given, on every collection create/delete,
+# regardless of ANONYMIZED_TELEMETRY). Pin to the last version whose
+# capture(distinct_id, event, properties, ...) matches what chromadb calls.
+posthog==3.7.4
 
 # File content extraction
 pdfplumber==0.11.4

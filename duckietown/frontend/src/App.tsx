@@ -243,6 +243,12 @@ export default function App() {
   const [syncing, setSyncing] = useState(false);
   const [isWatching, setIsWatching] = useState(false);
   const [vaultPath, setVaultPath] = useState<string | null>(null);
+  // Carries async sign-in failures (emitted after SignInWithGoogle already
+  // resolved, e.g. the Google round-trip itself failing) down to
+  // AuthScreen so it can reset its stuck "Opening browser..." button. The
+  // nonce guarantees AuthScreen's effect re-fires even if the same message
+  // string is emitted twice in a row.
+  const [authError, setAuthError] = useState<{ msg: string; nonce: number } | null>(null);
 
   const loadFiles = useCallback(async () => {
     try {
@@ -299,6 +305,7 @@ export default function App() {
 
     wails.on("auth-error", (msg: string) => {
       toast.error("Sign in failed", { description: msg });
+      setAuthError({ msg, nonce: Date.now() });
       setScreen("auth");
     });
 
@@ -437,7 +444,9 @@ export default function App() {
 
   return (
     <>
-      {screen === "auth" && <AuthScreen onSignIn={handleSignIn} />}
+      {screen === "auth" && (
+        <AuthScreen onSignIn={handleSignIn} asyncError={authError} />
+      )}
       {screen === "setup" && <SetupScreen onSetup={handleSetup} />}
       {screen === "main" && vaultPath && (
         <MainScreen

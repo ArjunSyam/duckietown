@@ -96,6 +96,12 @@ func shouldSkipFile(name string) bool {
 	if strings.HasPrefix(name, ".") {
 		return true
 	}
+	// Explorer-integration marker file (internal/shell) — must never sync
+	// to Supabase or get ingested into ChromaDB. Windows names are
+	// case-insensitive, so match case-insensitively.
+	if strings.EqualFold(name, "desktop.ini") {
+		return true
+	}
 	skipExts := []string{"~", ".tmp", ".crdownload", ".part", ".partial", ".download"}
 	for _, ext := range skipExts {
 		if strings.HasSuffix(name, ext) {
@@ -165,7 +171,7 @@ func (s *Service) handleFSEvent(event fsnotify.Event, watcher *fsnotify.Watcher)
 			} else {
 				wailsruntime.EventsEmit(s.ctx, "file-uploaded", name)
 				// Only ingest genuinely new files
-				queueIngest(event.Name, name)
+				queueIngest(event.Name, name, folderPath)
 			}
 		}()
 
@@ -183,7 +189,7 @@ func (s *Service) handleFSEvent(event fsnotify.Event, watcher *fsnotify.Watcher)
 				s.Supa.UploadFile(newPath, name, newFolder)
 				s.Supa.UpdateFileFolderPath(name, newFolder, newSP)
 				// Update ChromaDB metadata in-place — zero re-embedding
-				s.Sidecar.MoveFileEmbeddings(name, name)
+				s.Sidecar.MoveFileEmbeddings(name, name, newFolder)
 				wailsruntime.EventsEmit(s.ctx, "file-moved", map[string]string{
 					"file_name":   name,
 					"from_folder": folderPath,

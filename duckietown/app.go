@@ -11,6 +11,7 @@ import (
 	"duckietown/internal/agent"
 	"duckietown/internal/authsvc"
 	"duckietown/internal/config"
+	"duckietown/internal/shell"
 	"duckietown/internal/sidecar"
 	"duckietown/internal/supabase"
 	"duckietown/internal/vault"
@@ -98,6 +99,14 @@ func (a *App) startup(ctx context.Context) {
 	a.vaultSvc.StartWatcher()
 	go a.vaultSvc.FullSync()
 	wailsruntime.EventsEmit(a.ctx, "watcher-ready", true)
+
+	if !cfg.DisableExplorerIntegration {
+		go func() {
+			if err := shell.RegisterVaultFolder(cfg.VaultPath); err != nil {
+				fmt.Printf("⚠️ Explorer integration setup failed: %v\n", err)
+			}
+		}()
+	}
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -154,4 +163,43 @@ func (a *App) ChatWithAgent(message string, history []agent.ChatMessage, fileNam
 }
 func (a *App) OrganiseFolder(currentFolderPath, query, newFolderName, typeFilter string) (agent.OrganiseFolderResult, error) {
 	return a.agentSvc.OrganiseFolder(currentFolderPath, query, newFolderName, typeFilter)
+}
+func (a *App) UndoLastOrganise() (agent.OrganiseFolderResult, error) {
+	return a.agentSvc.UndoLastOrganise()
+}
+
+// ── AI: organise v2 (search -> judge -> preview -> confirm -> move) ────
+
+func (a *App) ProposeOrganise(message, currentFolder string) (agent.OrganisePreview, error) {
+	return a.agentSvc.ProposeOrganise(message, currentFolder)
+}
+func (a *App) ConfirmOrganisePlan(planID string, selectedFileNames []string) (agent.ConfirmOrganiseResult, error) {
+	return a.agentSvc.ConfirmOrganisePlan(planID, selectedFileNames)
+}
+func (a *App) CancelOrganisePlan(planID string) error {
+	return a.agentSvc.CancelOrganisePlan(planID)
+}
+func (a *App) BackfillFileProfiles() (agent.BackfillResult, error) {
+	return a.agentSvc.BackfillFileProfiles()
+}
+
+// ── AI: rename (search -> propose names -> preview -> confirm -> rename) ──
+
+func (a *App) ConfirmRenamePlan(planID string, selections []agent.RenameSelection) (agent.ConfirmRenameResult, error) {
+	return a.agentSvc.ConfirmRenamePlan(planID, selections)
+}
+func (a *App) CancelRenamePlan(planID string) error {
+	return a.agentSvc.CancelRenamePlan(planID)
+}
+
+// ── Windows Explorer integration (no-op on other OSes) ─────────────────
+
+func (a *App) GetExplorerIntegrationEnabled() bool {
+	return a.vaultSvc.GetExplorerIntegrationEnabled()
+}
+func (a *App) SetExplorerIntegrationEnabled(enabled bool) error {
+	return a.vaultSvc.SetExplorerIntegrationEnabled(enabled)
+}
+func (a *App) RemoveExplorerIntegration() error {
+	return a.vaultSvc.RemoveExplorerIntegration()
 }

@@ -21,8 +21,9 @@ var ingestQueue = make(chan ingestJob, 256)
 var ingestPending atomic.Int32 // count of jobs waiting or in progress
 
 type ingestJob struct {
-	filePath string
-	fileName string
+	filePath   string
+	fileName   string
+	folderPath string
 }
 
 func (s *Service) StartIngestWorker() {
@@ -34,7 +35,7 @@ func (s *Service) StartIngestWorker() {
 				"pending":   fmt.Sprintf("%d", ingestPending.Load()),
 			})
 
-			if err := s.Sidecar.IngestFile(job.filePath, job.fileName); err != nil {
+			if err := s.Sidecar.IngestFile(job.filePath, job.fileName, job.folderPath); err != nil {
 				fmt.Printf("⚠️ Ingest failed for %s: %v\n", job.fileName, err)
 				wailsruntime.EventsEmit(s.ctx, "ingest-error", map[string]string{
 					"file_name": job.fileName,
@@ -60,10 +61,10 @@ func (s *Service) StartIngestWorker() {
 	}()
 }
 
-func queueIngest(filePath, fileName string) {
+func queueIngest(filePath, fileName, folderPath string) {
 	ingestPending.Add(1)
 	select {
-	case ingestQueue <- ingestJob{filePath, fileName}:
+	case ingestQueue <- ingestJob{filePath, fileName, folderPath}:
 	default:
 		// Queue full — decrement counter since job won't run
 		ingestPending.Add(-1)
@@ -114,7 +115,7 @@ func (s *Service) RenameFile(oldName, newName string) error {
 	s.Supa.RenameFileRecord(oldName, newName, folderPath, newSP)
 
 	go func() {
-		if err := s.Sidecar.MoveFileEmbeddings(oldName, newName); err != nil {
+		if err := s.Sidecar.MoveFileEmbeddings(oldName, newName, folderPath); err != nil {
 			fmt.Printf("⚠️ Failed to update embeddings for rename %s → %s: %v\n", oldName, newName, err)
 		}
 	}()
@@ -233,7 +234,7 @@ func (s *Service) FullSync() {
 		}
 		if !indexed[name] {
 			fmt.Printf("🧠 Queuing ingest: %s\n", name)
-			queueIngest(entry.abs, name)
+			queueIngest(entry.abs, name, entry.folder)
 		}
 	}
 

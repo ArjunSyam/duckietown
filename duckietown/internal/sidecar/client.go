@@ -26,9 +26,10 @@ func Ready() bool {
 }
 
 type ingestRequest struct {
-	FilePath string `json:"file_path"`
-	FileName string `json:"file_name"`
-	UserID   string `json:"user_id"`
+	FilePath   string `json:"file_path"`
+	FileName   string `json:"file_name"`
+	UserID     string `json:"user_id"`
+	FolderPath string `json:"folder_path"`
 }
 
 type deleteRequest struct {
@@ -37,9 +38,16 @@ type deleteRequest struct {
 }
 
 type moveRequest struct {
-	OldName string `json:"old_name"`
-	NewName string `json:"new_name"`
-	UserID  string `json:"user_id"`
+	OldName       string `json:"old_name"`
+	NewName       string `json:"new_name"`
+	NewFolderPath string `json:"new_folder_path"`
+	UserID        string `json:"user_id"`
+}
+
+type enrichRequest struct {
+	FilePath string `json:"file_path,omitempty"`
+	FileName string `json:"file_name"`
+	UserID   string `json:"user_id"`
 }
 
 // Client issues ingest/embedding requests to the sidecar on behalf of the
@@ -82,7 +90,7 @@ func (c *Client) GetIndexedFiles() (map[string]bool, error) {
 }
 
 // IngestFile embeds and stores a file in ChromaDB.
-func (c *Client) IngestFile(filePath, fileName string) error {
+func (c *Client) IngestFile(filePath, fileName, folderPath string) error {
 	if c.UserID == "" {
 		return fmt.Errorf("not authenticated")
 	}
@@ -92,9 +100,10 @@ func (c *Client) IngestFile(filePath, fileName string) error {
 	}
 
 	body, _ := json.Marshal(ingestRequest{
-		FilePath: filePath,
-		FileName: fileName,
-		UserID:   c.UserID,
+		FilePath:   filePath,
+		FileName:   fileName,
+		UserID:     c.UserID,
+		FolderPath: folderPath,
 	})
 
 	client := &http.Client{Timeout: httpClientTimeout()}
@@ -111,7 +120,7 @@ func (c *Client) IngestFile(filePath, fileName string) error {
 
 // MoveFileEmbeddings updates ChromaDB metadata when a file is renamed or
 // moved. Reuses existing embeddings — no re-ingestion.
-func (c *Client) MoveFileEmbeddings(oldName, newName string) error {
+func (c *Client) MoveFileEmbeddings(oldName, newName, newFolderPath string) error {
 	if c.UserID == "" || !Ready() {
 		return nil
 	}
@@ -120,9 +129,10 @@ func (c *Client) MoveFileEmbeddings(oldName, newName string) error {
 	}
 
 	body, _ := json.Marshal(moveRequest{
-		OldName: oldName,
-		NewName: newName,
-		UserID:  c.UserID,
+		OldName:       oldName,
+		NewName:       newName,
+		NewFolderPath: newFolderPath,
+		UserID:        c.UserID,
 	})
 
 	req, _ := http.NewRequest(http.MethodPatch, BaseURL+"/ingest/move", bytes.NewReader(body))
@@ -157,4 +167,70 @@ func (c *Client) DeleteFileEmbeddings(fileName string) error {
 	}
 	defer resp.Body.Close()
 	return nil
+}
+
+// GetFilesMissingProfiles returns file names already in ChromaDB that have
+// no chunk_type="profile" chunk yet — used by the backfill/reindex action.
+func (c *Client) GetFilesMissingProfiles() ([]string, error) {
+	if !Ready() {
+		return nil, fmt.Errorf("sidecar not ready")
+	}
+	url := fmt.Sprintf("%s/ingest/profiles-missing?user_id=%s", BaseURL, c.UserID)
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Files []string `json:"files"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	return result.Files, nil
+}
+
+// EnrichFile rebuilds a file's profile from chunks already in ChromaDB (no
+// re-extraction, no re-embedding of body content). filePath may be empty
+// if the file can't be resolved locally — enrichment still works from the
+// indexed chunks alone, it just won't benefit the hash cache for that file.
+// Returns the sidecar's status ("ok", "skipped", or "error") alongside err
+// so callers (e.g. the backfill action) can distinguish "nothing to do"
+// from an actual failure.
+func (c *Client) EnrichFile(filePath, fileName string) (status string, err error) {
+	if c.UserID == "" {
+		return "", fmt.Errorf("not authenticated")
+	}
+	if !Ready() {
+		return "", fmt.Errorf("sidecar not ready")
+	}
+
+	body, _ := json.Marshal(enrichRequest{
+		FilePath: filePath,
+		FileName: fileName,
+		UserID:   c.UserID,
+	})
+
+	client := &http.Client{Timeout: httpClientTimeout()}
+	resp, err := client.Post(BaseURL+"/ingest/enrich", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("enrich request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return "", fmt.Errorf("enrich returned %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Status string `json:"status"`
+		Detail string `json:"detail"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decode enrich response: %w", err)
+	}
+	if result.Status == "error" {
+		return result.Status, fmt.Errorf("enrich failed: %s", result.Detail)
+	}
+	return result.Status, nil
 }

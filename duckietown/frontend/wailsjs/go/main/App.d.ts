@@ -4,7 +4,17 @@ import {agent} from '../models';
 import {supabase} from '../models';
 import {vault} from '../models';
 
+export function BackfillFileProfiles():Promise<agent.BackfillResult>;
+
+export function CancelOrganisePlan(arg1:string):Promise<void>;
+
+export function CancelRenamePlan(arg1:string):Promise<void>;
+
 export function ChatWithAgent(arg1:string,arg2:Array<agent.ChatMessage>,arg3:string):Promise<void>;
+
+export function ConfirmOrganisePlan(arg1:string,arg2:Array<string>):Promise<agent.ConfirmOrganiseResult>;
+
+export function ConfirmRenamePlan(arg1:string,arg2:Array<agent.RenameSelection>):Promise<agent.ConfirmRenameResult>;
 
 export function CreateFolder(arg1:string):Promise<void>;
 
@@ -15,6 +25,8 @@ export function DeleteFolder(arg1:string):Promise<void>;
 export function GetChatModel():Promise<string>;
 
 export function GetCurrentUser():Promise<Record<string, string>>;
+
+export function GetExplorerIntegrationEnabled():Promise<boolean>;
 
 export function GetFilePreview(arg1:string):Promise<string>;
 
@@ -34,14 +46,22 @@ export function OrganiseFolder(arg1:string,arg2:string,arg3:string,arg4:string):
 
 export function ParseOrganiseIntent(arg1:string):Promise<agent.OrganiseIntent>;
 
+export function ProposeOrganise(arg1:string,arg2:string):Promise<agent.OrganisePreview>;
+
+export function RemoveExplorerIntegration():Promise<void>;
+
 export function RenameFile(arg1:string,arg2:string):Promise<void>;
 
 export function SelectFolder():Promise<string>;
 
 export function SemanticSearch(arg1:string,arg2:number):Promise<Array<agent.SearchResult>>;
 
+export function SetExplorerIntegrationEnabled(arg1:boolean):Promise<void>;
+
 export function SetVaultPath(arg1:string):Promise<void>;
 
 export function SignInWithGoogle():Promise<void>;
 
 export function SignOut():Promise<void>;
+
+export function UndoLastOrganise():Promise<agent.OrganiseFolderResult>;
